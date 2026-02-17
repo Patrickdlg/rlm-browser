@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAllTabs: () => ipcRenderer.invoke('tab:get-all'),
   getActiveTab: () => ipcRenderer.invoke('tab:get-active'),
 
+  // View toggle
+  toggleCommandCenter: () => ipcRenderer.invoke('view:toggle-command-center'),
+  isCommandCenter: () => ipcRenderer.invoke('view:is-command-center'),
+
   // Events from main
   onTabUpdated: (cb: (tab: any) => void) => {
     const handler = (_: any, tab: any) => cb(tab)

@@ -16,6 +16,8 @@ declare global {
       reload: (tabId: string) => Promise<void>
       getAllTabs: () => Promise<TabInfo[]>
       getActiveTab: () => Promise<string | null>
+      toggleCommandCenter: () => Promise<boolean>
+      isCommandCenter: () => Promise<boolean>
       onTabUpdated: (cb: (tab: TabInfo) => void) => () => void
       onActiveTabChanged: (cb: (tabId: string) => void) => () => void
       onTabClosed: (cb: (tabId: string) => void) => () => void
@@ -26,15 +28,15 @@ declare global {
 export default function App() {
   const [tabs, setTabs] = useState<TabInfo[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  const [commandCenterActive, setCommandCenterActive] = useState(false)
 
   const activeTab = tabs.find(t => t.id === activeTabId) ?? null
 
   useEffect(() => {
-    // Load initial state
     window.electronAPI.getAllTabs().then(setTabs)
     window.electronAPI.getActiveTab().then(setActiveTabId)
+    window.electronAPI.isCommandCenter().then(setCommandCenterActive)
 
-    // Subscribe to updates
     const unsubs = [
       window.electronAPI.onTabUpdated((tab) => {
         setTabs(prev => {
@@ -67,16 +69,17 @@ export default function App() {
   }, [])
 
   const handleSwitchTab = useCallback((tabId: string) => {
+    // If command center is showing, switch back to tabs first
+    if (commandCenterActive) {
+      window.electronAPI.toggleCommandCenter().then(setCommandCenterActive)
+    }
     window.electronAPI.switchTab(tabId)
-  }, [])
+  }, [commandCenterActive])
 
   const handleNavigate = useCallback((url: string) => {
     if (!activeTabId) return
-    // Auto-add https:// if no protocol
     let finalUrl = url.trim()
     if (finalUrl && !finalUrl.match(/^[a-zA-Z]+:\/\//)) {
-      // If it looks like a URL (has a dot), add https://
-      // Otherwise treat it as a search query
       if (finalUrl.includes('.') && !finalUrl.includes(' ')) {
         finalUrl = 'https://' + finalUrl
       } else {
@@ -98,16 +101,22 @@ export default function App() {
     if (activeTabId) window.electronAPI.reload(activeTabId)
   }, [activeTabId])
 
+  const handleToggleCommandCenter = useCallback(() => {
+    window.electronAPI.toggleCommandCenter().then(setCommandCenterActive)
+  }, [])
+
   return (
     <div className="flex flex-col h-screen bg-[#1e1e2e]">
       <TabBar
         tabs={tabs}
         activeTabId={activeTabId}
+        commandCenterActive={commandCenterActive}
         onSwitch={handleSwitchTab}
         onClose={handleCloseTab}
         onNew={handleNewTab}
+        onToggleCommandCenter={handleToggleCommandCenter}
       />
-      <div className="flex items-center gap-1 px-2 py-1 bg-[#181825] border-b border-[#313244]">
+      <div className="flex items-center gap-2 py-1.5 bg-[#181825] border-b border-[#313244]" style={{ paddingLeft: 8, paddingRight: 8 }}>
         <NavigationControls
           canGoBack={activeTab?.canGoBack ?? false}
           canGoForward={activeTab?.canGoForward ?? false}
@@ -117,8 +126,10 @@ export default function App() {
           onReload={handleReload}
         />
         <AddressBar
-          url={activeTab?.url ?? ''}
+          url={commandCenterActive ? '' : (activeTab?.url ?? '')}
           onNavigate={handleNavigate}
+          disabled={commandCenterActive}
+          placeholder={commandCenterActive ? 'Command Center' : undefined}
         />
       </div>
     </div>

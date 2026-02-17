@@ -3,9 +3,11 @@ import { useState, useEffect, useRef } from 'react'
 interface AddressBarProps {
   url: string
   onNavigate: (url: string) => void
+  disabled?: boolean
+  placeholder?: string
 }
 
-export default function AddressBar({ url, onNavigate }: AddressBarProps) {
+export default function AddressBar({ url, onNavigate, disabled, placeholder }: AddressBarProps) {
   const [inputValue, setInputValue] = useState(url)
   const [focused, setFocused] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -42,10 +44,11 @@ export default function AddressBar({ url, onNavigate }: AddressBarProps) {
       onKeyDown={handleKeyDown}
       onFocus={handleFocus}
       onBlur={() => setFocused(false)}
-      placeholder="Search or enter URL"
+      disabled={disabled}
+      placeholder={placeholder || 'Search or enter URL'}
       className="flex-1 h-7 px-3 rounded-md bg-[#313244] text-[#cdd6f4] text-sm
         border border-transparent focus:border-[#89b4fa] focus:outline-none
-        placeholder:text-[#6c7086]"
+        placeholder:text-[#6c7086] disabled:opacity-50"
     />
   )
 }

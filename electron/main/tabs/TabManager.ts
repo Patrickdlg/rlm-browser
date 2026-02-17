@@ -58,8 +58,8 @@ export class TabManager {
 
     wc.on('did-finish-load', () => {
       state.status = 'loaded'
-      state.canGoBack = wc.canGoBack()
-      state.canGoForward = wc.canGoForward()
+      state.canGoBack = wc.navigationHistory.canGoBack()
+      state.canGoForward = wc.navigationHistory.canGoForward()
       this.notifyChrome(IPC.TAB_UPDATED, state.toInfo())
     })
 
@@ -72,15 +72,15 @@ export class TabManager {
 
     wc.on('did-navigate', (_event, url) => {
       state.url = url
-      state.canGoBack = wc.canGoBack()
-      state.canGoForward = wc.canGoForward()
+      state.canGoBack = wc.navigationHistory.canGoBack()
+      state.canGoForward = wc.navigationHistory.canGoForward()
       this.notifyChrome(IPC.TAB_UPDATED, state.toInfo())
     })
 
     wc.on('did-navigate-in-page', (_event, url) => {
       state.url = url
-      state.canGoBack = wc.canGoBack()
-      state.canGoForward = wc.canGoForward()
+      state.canGoBack = wc.navigationHistory.canGoBack()
+      state.canGoForward = wc.navigationHistory.canGoForward()
       this.notifyChrome(IPC.TAB_UPDATED, state.toInfo())
     })
 
@@ -166,15 +166,15 @@ export class TabManager {
 
   goBack(tabId: string): void {
     const entry = this.tabs.get(tabId)
-    if (entry && entry.view.webContents.canGoBack()) {
-      entry.view.webContents.goBack()
+    if (entry && entry.view.webContents.navigationHistory.canGoBack()) {
+      entry.view.webContents.navigationHistory.goBack()
     }
   }
 
   goForward(tabId: string): void {
     const entry = this.tabs.get(tabId)
-    if (entry && entry.view.webContents.canGoForward()) {
-      entry.view.webContents.goForward()
+    if (entry && entry.view.webContents.navigationHistory.canGoForward()) {
+      entry.view.webContents.navigationHistory.goForward()
     }
   }
 
@@ -189,8 +189,18 @@ export class TabManager {
     if (!this.activeTabId) return
     const entry = this.tabs.get(this.activeTabId)
     if (!entry) return
+    this.window.contentView.addChildView(entry.view)
     const bounds = this.getTabBounds()
     entry.view.setBounds(bounds)
+  }
+
+  /** Remove the active tab view from the window (for command center toggle) */
+  hideActiveTab(): void {
+    if (!this.activeTabId) return
+    const entry = this.tabs.get(this.activeTabId)
+    if (entry) {
+      this.window.contentView.removeChildView(entry.view)
+    }
   }
 
   getAllTabs(): TabInfo[] {

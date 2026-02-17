@@ -1,17 +1,16 @@
-import { app, BaseWindow, WebContentsView, session } from 'electron'
+import { app, BaseWindow, WebContentsView, ipcMain } from 'electron'
 import { join } from 'path'
 import { TabManager } from './tabs/TabManager'
 import { registerIPCHandlers } from './ipc/handlers'
 
 // Layout constants
-const CHROME_HEIGHT = 72
-const COMMAND_CENTER_WIDTH_RATIO = 0.35
-const MIN_COMMAND_CENTER_WIDTH = 350
+const CHROME_HEIGHT = 82
 
 let mainWindow: BaseWindow
 let chromeView: WebContentsView
 let commandCenterView: WebContentsView
 let tabManager: TabManager
+let showingCommandCenter = false
 
 function createWindow() {
   mainWindow = new BaseWindow({
@@ -23,7 +22,7 @@ function createWindow() {
     titleBarOverlay: false,
   })
 
-  // Chrome view (tab bar + address bar)
+  // Chrome view (tab bar + address bar) — always visible at top
   chromeView = new WebContentsView({
     webPreferences: {
       preload: join(__dirname, '../preload/chrome.js'),
@@ -32,22 +31,19 @@ function createWindow() {
   })
   mainWindow.contentView.addChildView(chromeView)
 
-  // Command Center view
+  // Command Center view — toggled in/out of the content area
   commandCenterView = new WebContentsView({
     webPreferences: {
       preload: join(__dirname, '../preload/command-center.js'),
       sandbox: true,
     },
   })
-  mainWindow.contentView.addChildView(commandCenterView)
+  // Don't add it yet — starts hidden
 
   // Tab manager owns user tab views
   tabManager = new TabManager(mainWindow, () => {
-    // Provide the current tab area bounds
     const [width, height] = mainWindow.getContentSize()
-    const ccWidth = Math.max(MIN_COMMAND_CENTER_WIDTH, Math.round(width * COMMAND_CENTER_WIDTH_RATIO))
-    const tabWidth = width - ccWidth
-    return { x: 0, y: CHROME_HEIGHT, width: tabWidth, height: height - CHROME_HEIGHT }
+    return { x: 0, y: CHROME_HEIGHT, width, height: height - CHROME_HEIGHT }
   })
 
   // Provide chromeView to tab manager for IPC forwarding
@@ -55,6 +51,17 @@ function createWindow() {
 
   // Register IPC handlers
   registerIPCHandlers(tabManager, commandCenterView)
+
+  // Toggle command center IPC
+  ipcMain.handle('view:toggle-command-center', () => {
+    showingCommandCenter = !showingCommandCenter
+    layoutViews()
+    return showingCommandCenter
+  })
+
+  ipcMain.handle('view:is-command-center', () => {
+    return showingCommandCenter
+  })
 
   // Layout all views
   layoutViews()
@@ -76,14 +83,21 @@ function createWindow() {
 
 function layoutViews() {
   const [width, height] = mainWindow.getContentSize()
-  const ccWidth = Math.max(MIN_COMMAND_CENTER_WIDTH, Math.round(width * COMMAND_CENTER_WIDTH_RATIO))
-  const tabWidth = width - ccWidth
+  const contentBounds = { x: 0, y: CHROME_HEIGHT, width, height: height - CHROME_HEIGHT }
 
-  chromeView.setBounds({ x: 0, y: 0, width: tabWidth, height: CHROME_HEIGHT })
-  commandCenterView.setBounds({ x: tabWidth, y: 0, width: ccWidth, height: height })
+  // Chrome bar always spans full width
+  chromeView.setBounds({ x: 0, y: 0, width, height: CHROME_HEIGHT })
 
-  // Reposition active tab
-  tabManager.layoutActiveTab()
+  if (showingCommandCenter) {
+    // Hide active tab, show command center
+    tabManager.hideActiveTab()
+    mainWindow.contentView.addChildView(commandCenterView)
+    commandCenterView.setBounds(contentBounds)
+  } else {
+    // Hide command center, show active tab
+    mainWindow.contentView.removeChildView(commandCenterView)
+    tabManager.layoutActiveTab()
+  }
 }
 
 // Global safety net for unhandled rejections
@@ -99,7 +113,6 @@ process.on('unhandledRejection', (reason, _promise) => {
 app.whenReady().then(createWindow)
 
 app.on('window-all-closed', () => {
-  // Cleanup tab views
   if (tabManager) tabManager.destroyAll()
   app.quit()
 })
