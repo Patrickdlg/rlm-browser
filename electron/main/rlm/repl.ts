@@ -87,15 +87,23 @@ export class REPLRuntime {
       this.callbacks.onSetFinal(value)
     }))
 
-    // llm_query(prompt, data?) -> string
+    // llm_query(prompt, data?) -> string — MUST never reject, always return a string
     await jail.set('_llm_query', new ivm.Reference(async (prompt: string, data?: unknown) => {
-      return await this.callbacks.onSubCall(prompt, data)
+      try {
+        return await this.callbacks.onSubCall(prompt, data)
+      } catch (err: any) {
+        return `[SUB-CALL ERROR] ${err.message || String(err)}`
+      }
     }))
 
-    // llm_batch(prompts) -> Array<{status, value?, error?}>
+    // llm_batch(prompts) -> Array<{status, value?, error?}> — MUST never reject
     await jail.set('_llm_batch', new ivm.Reference(async (prompts: Array<{ prompt: string; data?: unknown }>) => {
-      const results = await this.callbacks.onSubBatch(prompts)
-      return new ivm.ExternalCopy(results).copyInto()
+      try {
+        const results = await this.callbacks.onSubBatch(prompts)
+        return new ivm.ExternalCopy(results).copyInto()
+      } catch (err: any) {
+        return new ivm.ExternalCopy([{ status: 'rejected', error: err.message || String(err) }]).copyInto()
+      }
     }))
 
     // --- Bootstrap the REPL environment inside the isolate ---
@@ -246,18 +254,18 @@ export class REPLRuntime {
         _setFinal.applySync(undefined, [serializable], { arguments: { copy: true } });
       }
 
-      // Recursive LLM calls
+      // Recursive LLM calls — data is passed as-is, no JSON.stringify wrapper
       async function llm_query(prompt, data) {
-        const args = data !== undefined ? [prompt, JSON.stringify(data)] : [prompt];
+        const args = data !== undefined ? [prompt, data] : [prompt];
         return _llm_query.apply(undefined, args, { arguments: { copy: true }, result: { promise: true, copy: true } });
       }
 
       async function llm_batch(prompts) {
-        const serialized = prompts.map(p => ({
+        const normalized = prompts.map(p => ({
           prompt: p.prompt || p,
-          data: p.data ? JSON.stringify(p.data) : undefined
+          data: p.data !== undefined ? p.data : undefined
         }));
-        return _llm_batch.apply(undefined, [serialized], { arguments: { copy: true }, result: { promise: true, copy: true } });
+        return _llm_batch.apply(undefined, [normalized], { arguments: { copy: true }, result: { promise: true, copy: true } });
       }
 
       // Stubs for deferred APIs

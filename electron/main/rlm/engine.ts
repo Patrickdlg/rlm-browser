@@ -1,4 +1,6 @@
-import { WebContentsView } from 'electron'
+import { WebContentsView, app } from 'electron'
+import { writeFileSync, mkdirSync, appendFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { TabManager } from '../tabs/TabManager'
 import type { LLMConfig, IterationRecord, BlockResult, TaskState, TabChange } from '../../../src/shared/types'
 import { IPC } from '../../../src/shared/ipc-channels'
@@ -20,6 +22,7 @@ export class RLMEngine {
   private subCallCount = 0
   private status: 'idle' | 'running' | 'complete' | 'cancelled' | 'error' = 'idle'
   private pendingConfirmation: ((approved: boolean) => void) | null = null
+  private traceFile: string | null = null
 
   constructor(tabManager: TabManager, commandCenterView: WebContentsView, config: LLMConfig) {
     this.tabManager = tabManager
@@ -38,6 +41,33 @@ export class RLMEngine {
     if (!this.commandCenterView.webContents.isDestroyed()) {
       this.commandCenterView.webContents.send(channel, data)
     }
+    this.trace(channel, data)
+  }
+
+  private trace(channel: string, data: unknown): void {
+    if (!this.traceFile) return
+    // Skip high-frequency token events to keep trace files readable
+    if (channel === IPC.RLM_STREAM_TOKEN) return
+    try {
+      const line = JSON.stringify({ ts: Date.now(), ch: channel, data }) + '\n'
+      appendFileSync(this.traceFile, line)
+    } catch {
+      // Best-effort — don't let trace logging break the engine
+    }
+  }
+
+  private initTraceFile(message: string): void {
+    try {
+      const tracesDir = join(app.getPath('userData'), 'traces')
+      mkdirSync(tracesDir, { recursive: true })
+      const ts = new Date().toISOString().replace(/[:.]/g, '-')
+      const slug = message.slice(0, 40).replace(/[^a-zA-Z0-9]+/g, '-').replace(/-+$/, '')
+      this.traceFile = join(tracesDir, `${ts}_${slug}.jsonl`)
+      writeFileSync(this.traceFile, JSON.stringify({ ts: Date.now(), event: 'run-start', message, config: { provider: this.config.provider, primaryModel: this.config.primaryModel, subModel: this.config.subModel, maxIterations: this.config.maxIterations } }) + '\n')
+      console.log(`[RLM] Trace: ${this.traceFile}`)
+    } catch {
+      this.traceFile = null
+    }
   }
 
   /** Run a task — the main Algorithm 1 loop */
@@ -51,6 +81,7 @@ export class RLMEngine {
     this.subCallCount = 0
     this.abortController = new AbortController()
     const signal = this.abortController.signal
+    this.initTraceFile(message)
 
     const maxIter = this.config.maxIterations || MAX_ITERATIONS
     this.taskTracker.setTask(message, maxIter)
@@ -249,6 +280,7 @@ export class RLMEngine {
         this.repl = null
       }
       this.abortController = null
+      this.traceFile = null
     }
   }
 
@@ -263,6 +295,9 @@ export class RLMEngine {
 
     const MAX_SUB_ITERATIONS = 10
 
+    // Snapshot existing tab IDs so we can clean up any tabs the sub-agent creates
+    const preExistingTabIds = new Set(this.tabManager.getAllTabs().map(t => t.id))
+
     // Create a fresh REPL for this sub-call with full access
     const subRepl = new REPLRuntime(this.tabManager, {
       onLog: (msg) => this.emit(IPC.RLM_LOG, { message: `[sub-call] ${msg}` }),
@@ -274,10 +309,9 @@ export class RLMEngine {
     try {
       await subRepl.initialize()
 
-      // Inject the data as a variable in the sub-REPL
+      // Inject the data as a variable in the sub-REPL — no JSON.parse roundtrip
       if (data !== undefined) {
-        const serialized = typeof data === 'string' ? data : JSON.stringify(data, null, 0)
-        await subRepl.execute(`var __data = ${JSON.stringify(serialized)}; try { __data = JSON.parse(__data); } catch(e) {}`)
+        await subRepl.execute(`var __data = (${JSON.stringify(data)})`)
       }
 
       // Same system prompt as main agent, just with llm_query/llm_batch excluded
@@ -289,12 +323,12 @@ export class RLMEngine {
         `Progress so far: ${this.taskTracker.progressSummary()}`,
         `\n## Your Task`,
         prompt,
-        data !== undefined ? `\nData has been loaded into the variable \`__data\`. Use it directly.` : '',
+        data !== undefined ? `\n⚠️ IMPORTANT: The parent agent has loaded data into the variable \`__data\`. This is the content you need to process. Read it, reason about it, and call setFinal() with your answer. Do NOT open new tabs or search for the same information — the data is already in \`__data\`.` : '',
       ].join('\n')
 
       const history: Array<{ role: 'user' | 'assistant'; content: string }> = [
         { role: 'user', content: data !== undefined
-          ? `Execute the sub-task. Data is available as \`__data\`.`
+          ? `Execute the sub-task. The data you need is already in \`__data\` — process it and call setFinal() with your answer. Do NOT open tabs or do searches.`
           : 'Execute the sub-task described in your system prompt.'
         },
       ]
@@ -372,24 +406,33 @@ export class RLMEngine {
         }).join('\n\n')
 
         history.push({ role: 'assistant', content: response })
-        history.push({ role: 'user', content: `Code executed.\n${blockMeta}\n\nContinue — call setFinal(value) when you have the result.` })
+        const continueMsg = data !== undefined
+          ? `Code executed.\n${blockMeta}\n\n⚠️ You have NOT called setFinal() yet. The data is in \`__data\`. Process it and call setFinal(value) NOW.`
+          : `Code executed.\n${blockMeta}\n\nContinue — call setFinal(value) when you have the result.`
+        history.push({ role: 'user', content: continueMsg })
       }
 
-      // Hit iteration cap — try to salvage something useful
-      const envMeta = await subRepl.getEnvMetadata()
-      const envKeys = Object.keys(envMeta)
-      if (envKeys.length > 0) {
-        this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `hit ${MAX_SUB_ITERATIONS} iterations, returning env state (${envKeys.length} vars)` })
-        return JSON.stringify(envMeta)
-      }
+      // Hit iteration cap — return a clear error, not raw env metadata
       this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `hit ${MAX_SUB_ITERATIONS} iterations without setFinal` })
-      return `[SUB-CALL] Reached ${MAX_SUB_ITERATIONS} iterations without calling setFinal(). No result produced.`
+      return `[SUB-CALL ERROR] Sub-agent reached ${MAX_SUB_ITERATIONS} iterations without calling setFinal(). It may have gotten stuck. Try rephrasing or simplifying the sub-task.`
     } catch (err: any) {
       const errMsg = `[SUB-CALL ERROR] ${err.message || String(err)}`
       this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: errMsg })
       return errMsg
     } finally {
       subRepl.dispose()
+
+      // Auto-cleanup: close any tabs the sub-agent created
+      const currentTabs = this.tabManager.getAllTabs()
+      for (const tab of currentTabs) {
+        if (!preExistingTabIds.has(tab.id)) {
+          try {
+            this.tabManager.closeTab(tab.id)
+          } catch {
+            // Tab may already be gone — ignore
+          }
+        }
+      }
     }
   }
 

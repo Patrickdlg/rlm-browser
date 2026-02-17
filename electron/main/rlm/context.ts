@@ -14,23 +14,40 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
   const { isSubCall = false } = options
 
   const intro = isSubCall
-    ? `You are a sub-agent inside a browser automation system called Ouroboros. You are executing a focused sub-task. You have full programmatic access to all open tabs, their DOM, and storage — identical to the main agent.`
+    ? `You are a sub-agent inside a browser automation system called Ouroboros. You are executing a focused sub-task. You can read any open tab's content, and you can create your own tabs if needed — but other agents may be working on existing tabs concurrently, so treat tabs you didn't open as read-only.`
     : `You are an AI assistant operating inside a web browser called Ouroboros. You have programmatic access to all open tabs, their DOM, network requests, cookies, and storage.`
 
   const rules = [
     `- IMPORTANT: Tab IDs are STRINGS like "tab_0", "tab_1". Get them from \`tabs[0].id\` or \`activeTab\`, never use bare identifiers like tab_0.`,
     `- Never request large data dumps. Use targeted selectors and queries.`,
     `- You can store variables directly (e.g. \`const results = []\`) — they persist across iterations. You can also use the \`env\` object (e.g. \`env.emails = [...]\`).`,
-    ...(!isSubCall ? [`- Use \`llm_query(prompt, data?)\` for sub-tasks that process extracted data.`] : []),
+    ...(!isSubCall ? [
+      `- When you have page content to analyze, summarize, or extract information from, use \`llm_query(prompt, content)\` — do NOT manually slice substrings, log previews, or do rigid text extraction yourself. Sub-agents can reason about entire pages. Get the content with \`getText()\`, pass it to \`llm_query()\`, and use the result.`,
+      `- \`navigate(tabId, url)\` DESTROYS the current page in that tab and replaces it — you lose all content. To view multiple sites, use \`openTab(url)\` for each one so previous pages remain accessible.`,
+      `- \`llm_batch()\` runs sub-agents concurrently — they may create and clean up their own tabs. Check \`tabs\` after batch calls if needed.`,
+    ] : []),
     `- Call \`setFinal(value)\` when you have the answer — this is the ONLY way to end the loop and deliver results. DO NOT forget to call setFinal().`,
     `- Use \`log(message)\` to report progress (output is automatically truncated — never worry about size).`,
     `- Each iteration, you may write one or more code blocks. All will be executed sequentially.`,
     `- ALWAYS \`await\` async calls. Missing await will cause silent failures.`,
     `- \`sleep()\` is capped at 10 seconds. Prefer \`waitForLoad(tabId)\` for waiting on page loads.`,
     `- \`execInTab\` results are capped at 100K chars. Use specific selectors to narrow results.`,
+    `- If a CSS selector returns empty/null, don't keep retrying the same selector. Fall back to \`getText(tabId)\` to get the full page text, or use \`execInTab\` with string searches (e.g. \`document.body.innerText.match(/pattern/)\`) to locate content. Sites change their DOM structure frequently.`,
+    `- Google search results have unpredictable DOM structure. Do NOT use \`querySelector\`/\`querySelectorAll\` with selectors like \`div.g\` — they will fail. Use \`getText(tabId)\` to read Google's search result snippets as plain text. If using \`getLinks(tabId)\`, note that the first ~10 links are Google's own navigation (Accessibility help, Sign in, Images, etc.) — filter to links whose href does NOT contain \`google.com\`.`,
     ...(!isSubCall ? [`- \`llm_query()\` may return "[SUB-CALL ERROR] ..." on failure — always check the result.`] : []),
-    ...(isSubCall ? [`- \`llm_query\` and \`llm_batch\` are NOT available in sub-call context — YOU are the sub-call. Process data directly with code.`] : []),
-    `- When you have enough information to answer, call setFinal() IMMEDIATELY. Do not do extra iterations.`,
+    ...(isSubCall ? [
+      `- \`llm_query\` and \`llm_batch\` are NOT available in sub-call context. You have full browser access and can reason about data directly — read tabs, extract content, and synthesize answers. Call \`setFinal()\` with your answer when done.`,
+      `- IMPORTANT: \`setFinal()\` must be called with a clean, natural language answer — NOT JSON, NOT raw copied text from pages. Read the content, think about it, and write a proper summary or answer in your own words. Never copy-paste raw page text (navigation links, "People also ask", "Missing:", "[edit]" tags, infobox tables, page footers, etc.) into your answer.`,
+      `- If you cannot find the requested information, say so clearly — do NOT pad your answer with unrelated content or make up facts. "I didn't find specific events for that date" is a perfectly valid answer.`,
+      `- If \`__data\` is provided, it contains input from the parent agent (could be a string, object, or anything). USE IT DIRECTLY — do NOT call JSON.parse on it, do NOT open new tabs to search for the same information. Read __data, reason about it, and call setFinal() with your answer. Only query browser state if __data is genuinely insufficient for the task.`,
+      `- IMPORTANT: Other agents may be working on existing tabs concurrently. Treat tabs you did NOT create as READ-ONLY — you may read their content (\`getText\`, \`getDOM\`, \`execInTab\`, \`querySelector\`, etc.) but do NOT \`navigate()\`, \`closeTab()\`, \`click()\`, or \`type()\` on them.`,
+      `- If you need to visit a URL, use \`openTab(url)\` to create your own tab. Clean up with \`closeTab()\` when you're done.`,
+    ] : []),
+    `- When you have enough information to answer, call setFinal() IMMEDIATELY. Do not do extra iterations. If a sub-call returned a useful answer, deliver it — don't redo the work.`,
+    `- Before calling setFinal(), make sure your answer is coherent, deduplicated, and directly addresses the user's question. Do not return raw scraped text or lists with duplicate entries.`,
+    ...(!isSubCall ? [
+      `- Do NOT concatenate raw \`llm_query()\` results directly into setFinal(). Sub-agent results may contain noise. Instead, use one final \`llm_query()\` to synthesize all gathered information into a clean, well-written answer, then call setFinal() with that.`,
+    ] : []),
   ]
 
   const apiSections = [
@@ -89,12 +106,21 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
 
   const examples = isSubCall
     ? [
-      `## Example`,
+      `## Examples`,
+      ``,
+      `### When __data is provided (MOST COMMON)`,
       `\`\`\`repl`,
-      `// __data contains the input passed by the parent agent`,
-      `// Process it directly and return the result`,
-      `const result = __data.split('\\n').filter(line => line.length > 0).length`,
-      `setFinal('The text has ' + result + ' non-empty lines')`,
+      `// __data has the content — just read it and answer. Do NOT open tabs or search.`,
+      `log('Data length: ' + __data.length)`,
+      `// Think about the content and write a clean answer in your own words`,
+      `setFinal('The region has a Mediterranean climate with mild winters. Key attractions include the historic center and nearby nature reserves.')`,
+      `\`\`\``,
+      ``,
+      `### When NO __data — extract from existing tabs`,
+      `\`\`\`repl`,
+      `const tabId = tabs.find(t => t.url.includes('wikipedia'))?.id`,
+      `const text = await getText(tabId, '#mw-content-text')`,
+      `setFinal('Owls primarily eat small mammals, insects, and other birds.')`,
       `\`\`\``,
     ]
     : [
@@ -110,44 +136,43 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
       `### Multi-step: Search and extract`,
       `Iteration 1:`,
       `\`\`\`repl`,
-      `const tabId = tabs[0].id`,
-      `await navigate(tabId, 'https://en.wikipedia.org/wiki/Turtle')`,
-      `await waitForLoad(tabId)`,
-      `log('Navigated to Wikipedia turtle page')`,
-      `\`\`\``,
-      ``,
-      `Iteration 2:`,
-      `\`\`\`repl`,
-      `const tabId = tabs[0].id`,
-      `const content = await getText(tabId, '#mw-content-text p')`,
-      `const summary = await llm_query('Summarize this text about turtles in 2 sentences', content)`,
+      `// openTab so we don't destroy whatever is on the existing tab`,
+      `const wikiTab = await openTab('https://en.wikipedia.org/wiki/Turtle')`,
+      `await waitForLoad(wikiTab)`,
+      `const content = await getText(wikiTab, '#mw-content-text')`,
+      `// Don't manually slice or log substrings — pass the full content to llm_query`,
+      `const summary = await llm_query('Summarize this Wikipedia article about turtles in 2-3 sentences', content)`,
       `\`\`\``,
       `Between iterations you see metadata showing what \`summary\` contains (type, size, preview). Check it looks right.`,
       ``,
-      `Iteration 3:`,
+      `Iteration 2:`,
       `\`\`\`repl`,
       `// metadata showed summary is a string with a good result — deliver it`,
       `setFinal(summary)`,
       `\`\`\``,
       ``,
-      `### Sub-calls with verification`,
+      `### Research task with multiple sources`,
       `Iteration 1:`,
       `\`\`\`repl`,
-      `const tabId = tabs[0].id`,
-      `const tableHTML = await getDOM(tabId, 'table.wikitable')`,
-      `const parsed = await llm_query('Extract rows from this table as JSON array', tableHTML)`,
-      `log(parsed)`,
+      `const searchTab = await openTab('https://www.google.com/search?q=best+restaurants+in+Lisbon')`,
+      `await waitForLoad(searchTab)`,
+      `// Use getText for Google — getLinks includes Google's own navigation links`,
+      `const searchText = await getText(searchTab)`,
+      `const searchSummary = await llm_query('From these Google search results, extract the top 5 restaurant names and their URLs', searchText)`,
+      `log(searchSummary)`,
       `\`\`\``,
-      `After execution, REPL Variables shows: \`parsed: string (1,204 chars) — preview: "[{\\"name\\":\\"Alice\\",..."]\`.`,
-      `\`log()\` output appears in the activity panel — we truncate automatically, never worry about size.`,
       ``,
       `Iteration 2:`,
       `\`\`\`repl`,
-      `// metadata confirmed parsed looks like valid JSON — deliver it`,
-      `setFinal(parsed)`,
+      `// Open a promising result and use llm_query to extract details`,
+      `const detailTab = await openTab('https://example.com/lisbon-restaurants')`,
+      `await waitForLoad(detailTab)`,
+      `const pageContent = await getText(detailTab)`,
+      `const details = await llm_query('Extract restaurant names, cuisines, price ranges, and brief descriptions from this article', pageContent)`,
+      `setFinal(details)`,
       `\`\`\``,
       ``,
-      `**Key pattern:** After \`llm_query()\`, your result lands in a variable. Next iteration you see its type, size, and a preview in the REPL Variables metadata. Use \`log(variable)\` to inspect — output is auto-truncated. If the result starts with "[SUB-CALL ERROR]", retry with a different prompt. Call \`setFinal()\` once satisfied.`,
+      `**Key pattern:** Use \`llm_query(prompt, content)\` to analyze page content — don't manually slice substrings or log previews. After \`llm_query()\`, check the REPL Variables metadata to verify the result looks right. If it starts with "[SUB-CALL ERROR]", retry with a different prompt. Call \`setFinal()\` once satisfied.`,
     ]
 
   const sections = [
@@ -198,9 +223,20 @@ export async function buildEnvMetadata(
 
   // Get REPL variable metadata
   const envVars = await repl.getEnvMetadata()
+  // Built-in globals that are always present — filter from user variable summary
+  const BUILTIN_KEYS = new Set(['JSON', 'Math', 'Intl', 'Atomics', 'Reflect', 'console', 'WebAssembly'])
   let varsSection = ''
   if (Object.keys(envVars).length > 0) {
-    const varLines = Object.entries(envVars).map(([key, meta]: [string, any]) => {
+    // Simple variable name summary as progress signal
+    const userVarNames = Object.keys(envVars).filter(k => !BUILTIN_KEYS.has(k))
+    let summaryLine = ''
+    if (userVarNames.length > 0) {
+      summaryLine = `Your variables: ${userVarNames.join(', ')}\n`
+    }
+
+    const varLines = Object.entries(envVars)
+      .filter(([key]) => !BUILTIN_KEYS.has(key))
+      .map(([key, meta]: [string, any]) => {
       const preview = meta.preview ? ` — preview: ${String(meta.preview).slice(0, VAR_PREVIEW_MAX_CHARS)}` : ''
       if (meta.type?.startsWith('Array')) {
         const schema = meta.schema ? ` schema: {${meta.schema}}` : ''
@@ -213,7 +249,7 @@ export async function buildEnvMetadata(
         return `  ${key}: ${meta.type} = ${meta.value || ''}`
       }
     })
-    varsSection = `\n## REPL Variables\n${varLines.join('\n')}`
+    varsSection = `\n## REPL Variables\n${summaryLine}${varLines.join('\n')}`
   }
 
   // Tabs are external variables — only show count + active. Use `tabs` getter to query.
@@ -265,10 +301,10 @@ export async function buildMessages(
   const history = compactHistory(taskTracker.getIterations())
   if (history) sections.push(history)
 
-  // Reminder to call setFinal (reinforced every iteration, especially after iteration 2+)
+  // Reminder to call setFinal (every iteration)
   const iterCount = taskTracker.getIterations().length
-  if (iterCount >= 2) {
-    sections.push('⚠️ REMINDER: When you have the answer, call setFinal(value) to deliver it to the user. Do not keep iterating unnecessarily.')
+  if (iterCount >= 1) {
+    sections.push('⚠️ REMINDER: If you have sufficient information to answer the user\'s question, call setFinal(value) NOW. Do not do extra iterations when you already have what you need.')
   }
 
   // Combine into a single user message for this iteration
