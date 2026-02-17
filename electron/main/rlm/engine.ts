@@ -290,8 +290,9 @@ export class RLMEngine {
       return '[SUB-CALL ERROR] Maximum sub-call limit reached.'
     }
     this.subCallCount++
+    const subCallIndex = this.subCallCount - 1
 
-    this.emit(IPC.RLM_SUB_LLM_START, { prompt: prompt.slice(0, 200) })
+    this.emit(IPC.RLM_SUB_LLM_START, { prompt: prompt.slice(0, 200), subCallIndex })
 
     const MAX_SUB_ITERATIONS = 10
 
@@ -360,7 +361,7 @@ export class RLMEngine {
           llmErrors++
           if (llmErrors >= 3) {
             // 3 consecutive LLM failures — genuinely broken, bail
-            this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `LLM failed 3 times: ${err.message}` })
+            this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `LLM failed 3 times: ${err.message}`, subCallIndex })
             return `[SUB-CALL ERROR] LLM failed 3 consecutive times: ${err.message}`
           }
           // Feed error into history and retry — same as main loop resilience
@@ -379,7 +380,7 @@ export class RLMEngine {
 
           if (consecutiveNoCodes >= MAX_NO_CODE_CONTINUATIONS) {
             // Exhausted nudges — return the raw text as best-effort answer
-            this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `string (${response.length} chars) — no code after ${MAX_NO_CODE_CONTINUATIONS} attempts, returning raw text` })
+            this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `string (${response.length} chars) — no code after ${MAX_NO_CODE_CONTINUATIONS} attempts, returning raw text`, subCallIndex })
             return response
           }
           continue
@@ -400,7 +401,7 @@ export class RLMEngine {
         if (subRepl.isFinalCalled()) {
           const finalVal = subRepl.getFinalValue()
           const result = typeof finalVal === 'string' ? finalVal : JSON.stringify(finalVal)
-          this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `string (${result.length} chars)` })
+          this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `string (${result.length} chars)`, subCallIndex })
           return result
         }
 
@@ -427,11 +428,11 @@ export class RLMEngine {
       }
 
       // Hit iteration cap — return a clear error, not raw env metadata
-      this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `hit ${MAX_SUB_ITERATIONS} iterations without setFinal` })
+      this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `hit ${MAX_SUB_ITERATIONS} iterations without setFinal`, subCallIndex })
       return `[SUB-CALL ERROR] Sub-agent reached ${MAX_SUB_ITERATIONS} iterations without calling setFinal(). It may have gotten stuck. Try rephrasing or simplifying the sub-task.`
     } catch (err: any) {
       const errMsg = `[SUB-CALL ERROR] ${err.message || String(err)}`
-      this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: errMsg })
+      this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: errMsg, subCallIndex })
       return errMsg
     } finally {
       subRepl.dispose()

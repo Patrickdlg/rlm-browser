@@ -9,6 +9,7 @@ interface IterationCardProps {
 
 export default function IterationCard({ iteration, isActive, streamTokens }: IterationCardProps) {
   const [expanded, setExpanded] = useState(isActive)
+  const [logsExpanded, setLogsExpanded] = useState(false)
 
   const statusIcon = iteration.complete
     ? iteration.codeBlocks.some(b => b.error) ? '!' : 'ok'
@@ -31,6 +32,9 @@ export default function IterationCard({ iteration, isActive, streamTokens }: Ite
       >
         <span className={`font-mono font-bold ${statusColor}`}>{statusIcon}</span>
         <span className="font-medium">Iteration {iteration.number}</span>
+        {iteration.logs.length > 0 && (
+          <span className="text-[10px] text-[#6c7086]">({iteration.logs.length} log{iteration.logs.length !== 1 ? 's' : ''})</span>
+        )}
         <span className="text-[#6c7086] ml-auto">{duration}</span>
         <span className="text-[#45475a]">{expanded ? 'v' : '>'}</span>
       </button>
@@ -84,6 +88,28 @@ export default function IterationCard({ iteration, isActive, streamTokens }: Ite
               )}
             </div>
           ))}
+
+          {/* Logs — collapsible */}
+          {iteration.logs.length > 0 && (
+            <div className="border border-[#313244]/50 rounded overflow-hidden">
+              <button
+                onClick={(e) => { e.stopPropagation(); setLogsExpanded(!logsExpanded) }}
+                className="w-full flex items-center gap-2 px-2 py-1 text-[10px] text-[#6c7086] hover:bg-[#1e1e2e] text-left"
+              >
+                <span>{logsExpanded ? 'v' : '>'}</span>
+                <span>Logs ({iteration.logs.length})</span>
+              </button>
+              {logsExpanded && (
+                <div className="px-2 pb-1.5 max-h-40 overflow-y-auto">
+                  {iteration.logs.map((log, i) => (
+                    <div key={i} className="text-[10px] text-[#a6adc8] font-mono py-0.5 break-words">
+                      {log.message}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

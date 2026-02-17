@@ -7,12 +7,11 @@ interface ActivityPanelProps {
   streamTokens: string
   currentIteration: number
   isRunning: boolean
-  logs: Array<{ message: string; timestamp: number }>
   errors: string[]
 }
 
 export default function ActivityPanel({
-  iterations, streamTokens, currentIteration, isRunning, logs, errors
+  iterations, streamTokens, currentIteration, isRunning, errors
 }: ActivityPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -21,9 +20,9 @@ export default function ActivityPanel({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [iterations, logs, errors, streamTokens])
+  }, [iterations, errors, streamTokens])
 
-  if (iterations.length === 0 && logs.length === 0 && errors.length === 0) {
+  if (iterations.length === 0 && errors.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-[#45475a] text-sm">
         <div className="text-center">
@@ -52,17 +51,6 @@ export default function ActivityPanel({
           streamTokens={isRunning && i === iterations.length - 1 ? streamTokens : undefined}
         />
       ))}
-
-      {/* Logs */}
-      {logs.length > 0 && (
-        <div className="space-y-0.5">
-          {logs.map((log, i) => (
-            <div key={`log-${i}`} className="text-xs text-[#a6adc8] px-2 py-0.5 font-mono">
-              {log.message}
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Running indicator */}
       {isRunning && iterations.length === 0 && (

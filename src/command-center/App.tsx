@@ -40,7 +40,8 @@ export interface IterationState {
   number: number
   tokens: string
   codeBlocks: Array<{ code: string; result?: string; error?: string }>
-  subCalls: Array<{ prompt: string; result?: string }>
+  subCalls: Array<{ prompt: string; result?: string; subCallIndex?: number }>
+  logs: Array<{ message: string; timestamp: number }>
   complete: boolean
   durationMs?: number
 }
@@ -49,7 +50,6 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
   const [iterations, setIterations] = useState<IterationState[]>([])
-  const [logs, setLogs] = useState<Array<{ message: string; timestamp: number }>>([])
   const [finalResult, setFinalResult] = useState<any>(null)
   const [errors, setErrors] = useState<string[]>([])
   const [streamTokens, setStreamTokens] = useState('')
@@ -71,6 +71,7 @@ export default function App() {
             tokens: '',
             codeBlocks: [],
             subCalls: [],
+            logs: [],
             complete: false,
           })
           return next
@@ -120,7 +121,12 @@ export default function App() {
         setIterations(prev => {
           const next = [...prev]
           const last = next[next.length - 1]
-          if (last) last.subCalls.push({ prompt: data.prompt })
+          if (last) {
+            // Dedup by subCallIndex — prevents duplicates from HMR/StrictMode
+            if (!last.subCalls.some(s => s.subCallIndex === data.subCallIndex)) {
+              last.subCalls.push({ prompt: data.prompt, subCallIndex: data.subCallIndex })
+            }
+          }
           return next
         })
       }),
@@ -129,15 +135,23 @@ export default function App() {
         setIterations(prev => {
           const next = [...prev]
           const last = next[next.length - 1]
-          if (last && last.subCalls.length > 0) {
-            last.subCalls[last.subCalls.length - 1].result = data.resultMeta
+          if (last) {
+            const sub = last.subCalls.find(s => s.subCallIndex === data.subCallIndex)
+            if (sub) sub.result = data.resultMeta
           }
           return next
         })
       }),
 
       window.electronAPI.onLog((data) => {
-        setLogs(prev => [...prev, { message: data.message, timestamp: Date.now() }])
+        setIterations(prev => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (last) {
+            last.logs = [...last.logs, { message: data.message, timestamp: Date.now() }]
+          }
+          return next
+        })
       }),
 
       window.electronAPI.onError((data) => {
@@ -166,7 +180,6 @@ export default function App() {
   const handleSubmit = async (message: string) => {
     setIsRunning(true)
     setIterations([])
-    setLogs([])
     setFinalResult(null)
     setErrors([])
     setStreamTokens('')
@@ -202,7 +215,6 @@ export default function App() {
           streamTokens={streamTokens}
           currentIteration={currentIteration}
           isRunning={isRunning}
-          logs={logs}
           errors={errors}
         />
 
