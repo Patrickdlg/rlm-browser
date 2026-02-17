@@ -36,6 +36,7 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
     `- \`execInTab\` results are capped at 100K chars. Use specific selectors to narrow results.`,
     `- If a CSS selector returns empty/null, don't keep retrying the same selector. Fall back to \`getText(tabId)\` to get the full page text, or use \`execInTab\` with string searches (e.g. \`document.body.innerText.match(/pattern/)\`) to locate content. Sites change their DOM structure frequently.`,
     `- For Google search results, use \`getSearchResults(tabId)\` — it returns clean \`[{title, url, snippet}]\` for organic results only. Do NOT use \`getText()\` or \`getLinks()\` on Google — they include tons of navigation noise.`,
+    `- For Wikipedia pages with tables, use \`getWikiTables(tabId)\` — it returns structured \`[{caption, headers, rowCount, rows}]\` with each row as a header-keyed object. Much more reliable than trying to parse table HTML manually with selectors.`,
     `- For factual questions involving superlatives (highest, biggest, most recent, etc.), Wikipedia's "List of..." pages are frequently updated and reliable. Prefer them over Google's AI Overview, which may be outdated.`,
     ...(!isSubCall ? [`- \`llm_query()\` may return "[SUB-CALL ERROR] ..." on failure — always check the result.`] : []),
     ...(isSubCall ? [
@@ -73,6 +74,7 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
     `getDOM(tabId, selector?) → string            // outerHTML of element`,
     `getLinks(tabId) → Array<{text, href}>        // All links on page`,
     `getSearchResults(tabId) → Array<{title, url, snippet}>  // Google organic results (use this for Google!)`,
+    `getWikiTables(tabId) → Array<{caption, headers, rowCount, rows}>  // Wikipedia tables (up to 5 tables, 50 rows each)`,
     `getInputs(tabId) → Array<{id, name, type, value, placeholder}>`,
     `querySelector(tabId, sel) → {tagName, id, className, innerText, href, src, value, type} | null`,
     `querySelectorAll(tabId, sel) → Array<{tagName, id, className, innerText, href, src}>`,

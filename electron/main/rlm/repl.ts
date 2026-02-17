@@ -199,6 +199,40 @@ export class REPLRuntime {
         return execInTab(tabId, code);
       }
 
+      async function getWikiTables(tabId) {
+        const code = '(' + function() {
+          function clean(s) { return s.trim().split(String.fromCharCode(10)).join(' '); }
+          var tables = document.querySelectorAll('table.wikitable');
+          var result = [];
+          for (var t = 0; t < tables.length && t < 5; t++) {
+            var table = tables[t];
+            var caption = table.querySelector('caption');
+            var capText = caption ? clean(caption.innerText) : '';
+            var headerRow = table.querySelector('tr');
+            if (!headerRow) continue;
+            var ths = headerRow.querySelectorAll('th');
+            var headers = [];
+            for (var h = 0; h < ths.length; h++) {
+              headers.push(clean(ths[h].innerText));
+            }
+            if (headers.length === 0) continue;
+            var bodyRows = table.querySelectorAll('tr');
+            var rows = [];
+            for (var r = 1; r < bodyRows.length && r <= 50; r++) {
+              var cells = bodyRows[r].querySelectorAll('td, th');
+              var row = {};
+              for (var c = 0; c < cells.length && c < headers.length; c++) {
+                row[headers[c]] = clean(cells[c].innerText);
+              }
+              if (Object.keys(row).length > 0) rows.push(row);
+            }
+            result.push({ caption: capText, headers: headers, rowCount: bodyRows.length - 1, rows: rows });
+          }
+          return result;
+        } + ')()';
+        return execInTab(tabId, code);
+      }
+
       async function getInputs(tabId) {
         return execInTab(tabId, \`
           [...document.querySelectorAll('input, textarea, select')].map(el => ({
@@ -403,7 +437,7 @@ export class REPLRuntime {
         (() => {
           const BUILTIN_NAMES = new Set([
             'env', 'execInTab', 'openTab', 'closeTab', 'navigate', 'switchTab',
-            'waitForLoad', 'getText', 'getDOM', 'getLinks', 'getSearchResults', 'getInputs',
+            'waitForLoad', 'getText', 'getDOM', 'getLinks', 'getSearchResults', 'getWikiTables', 'getInputs',
             'querySelector', 'querySelectorAll', 'click', 'type', 'scroll',
             'log', 'sleep', 'setFinal', 'llm_query', 'llm_batch',
             'getAccessibilityTree', 'screenshot', 'getCookies', 'setCookie',
