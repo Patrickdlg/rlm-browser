@@ -88,7 +88,7 @@ The LLM writes code against this API surface inside a sandboxed `isolated-vm` is
 
 - **Data never enters the LLM context.** Browser state lives as REPL variables. The LLM only sees metadata summaries (type, size, schema, preview).
 - **History is metadata-only.** Each iteration records: code executed + structural result summary. Never raw output.
-- **Sub-calls get full context.** Every `llm_query()` sub-agent receives the system prompt + task context. Errors return strings, never throw.
+- **Sub-calls are full mini RLM loops.** Every `llm_query()` spawns a sub-agent with its own fresh REPL, full browser access, and up to 10 iterations. Same resilience as the main loop. Errors return strings, never throw.
 - **Task reinforcement every iteration.** The user's goal and auto-generated progress are restated to prevent drift.
 - **Token-based history compaction.** Triggers at 80% of budget, not at a fixed iteration count.
 - **`isolated-vm` sandbox.** LLM-generated code runs in a separate V8 isolate with no access to Node.js APIs — only the explicitly exposed REPL surface.
