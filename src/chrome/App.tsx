@@ -116,7 +116,7 @@ export default function App() {
         onNew={handleNewTab}
         onToggleCommandCenter={handleToggleCommandCenter}
       />
-      <div className="flex items-center gap-2 py-1.5 bg-[#181825] border-b border-[#313244]" style={{ paddingLeft: 8, paddingRight: 8 }}>
+      <div className="flex items-center gap-2 py-2 bg-[#181825] border-b border-[#313244]" style={{ paddingLeft: 12, paddingRight: 12 }}>
         <NavigationControls
           canGoBack={activeTab?.canGoBack ?? false}
           canGoForward={activeTab?.canGoForward ?? false}

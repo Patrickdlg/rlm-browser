@@ -4,7 +4,7 @@ import { TabManager } from './tabs/TabManager'
 import { registerIPCHandlers } from './ipc/handlers'
 
 // Layout constants
-const CHROME_HEIGHT = 82
+const CHROME_HEIGHT = 78
 
 let mainWindow: BaseWindow
 let chromeView: WebContentsView
