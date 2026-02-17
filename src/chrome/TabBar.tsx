@@ -41,7 +41,7 @@ export default function TabBar({
             <div className="w-4 h-4 flex-shrink-0 rounded-full bg-[#45475a]" />
           )}
           <span className="truncate flex-1">
-            {tab.status === 'loading' ? 'Loading...' : (tab.title || 'New Tab')}
+            {tab.title || (tab.status === 'loading' ? 'Loading...' : 'New Tab')}
           </span>
           <button
             onClick={(e) => { e.stopPropagation(); onClose(tab.id) }}
