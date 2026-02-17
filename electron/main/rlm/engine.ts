@@ -421,9 +421,21 @@ export class RLMEngine {
         }
 
         history.push({ role: 'assistant', content: response })
-        const continueMsg = data !== undefined
-          ? `Code executed.\n${blockMeta}${logSection}\n\n⚠️ You have NOT called setFinal() yet. The data is in \`__data\`. Process it and call setFinal(value) NOW.`
-          : `Code executed.\n${blockMeta}${logSection}\n\nContinue — call setFinal(value) when you have the result.`
+
+        const remainingIters = MAX_SUB_ITERATIONS - 1 - i
+        let continueMsg: string
+        if (remainingIters <= 2) {
+          // Final iteration nudge — force the sub-agent to wrap up
+          continueMsg = `Code executed.\n${blockMeta}${logSection}\n\n` +
+            `🚨 CRITICAL: You have ${remainingIters} iteration${remainingIters !== 1 ? 's' : ''} remaining before this sub-task FAILS. ` +
+            `STOP exploring, STOP logging data, STOP opening tabs. ` +
+            `You MUST call setFinal() RIGHT NOW with the best answer you can give based on what you have already seen. ` +
+            `Write a clean, natural language answer and call setFinal(answer) immediately.`
+        } else if (data !== undefined) {
+          continueMsg = `Code executed.\n${blockMeta}${logSection}\n\n⚠️ You have NOT called setFinal() yet. The data is in \`__data\`. Process it and call setFinal(value) NOW.`
+        } else {
+          continueMsg = `Code executed.\n${blockMeta}${logSection}\n\nContinue — call setFinal(value) when you have the result.`
+        }
         history.push({ role: 'user', content: continueMsg })
       }
 
