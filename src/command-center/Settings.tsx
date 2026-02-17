@@ -49,7 +49,7 @@ export default function Settings({ onClose }: SettingsProps) {
 
   return (
     <div className="flex flex-col h-screen bg-[#11111b] text-[#cdd6f4]">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#313244]">
+      <div className="flex items-center justify-between border-b border-[#313244]" style={{ padding: '12px 24px' }}>
         <h1 className="text-sm font-semibold text-[#89b4fa]">Settings</h1>
         <button
           onClick={onClose}
@@ -59,7 +59,7 @@ export default function Settings({ onClose }: SettingsProps) {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto space-y-4" style={{ padding: '20px 24px' }}>
         {/* Provider */}
         <div>
           <label className="block text-xs text-[#a6adc8] mb-1">Provider</label>

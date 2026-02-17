@@ -177,7 +177,7 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-[#11111b] text-[#cdd6f4]">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#313244]">
+      <div className="flex items-center justify-between border-b border-[#313244]" style={{ padding: '12px 24px' }}>
         <h1 className="text-sm font-semibold text-[#89b4fa]">Command Center</h1>
         <button
           onClick={() => setShowSettings(true)}
