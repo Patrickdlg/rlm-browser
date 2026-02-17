@@ -13,9 +13,11 @@ export interface SystemPromptOptions {
 export function getSystemPrompt(options: SystemPromptOptions = {}): string {
   const { isSubCall = false } = options
 
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+
   const intro = isSubCall
-    ? `You are a sub-agent inside a browser automation system called Ouroboros. You are executing a focused sub-task. You can read any open tab's content, and you can create your own tabs if needed — but other agents may be working on existing tabs concurrently, so treat tabs you didn't open as read-only.`
-    : `You are an AI assistant operating inside a web browser called Ouroboros. You have programmatic access to all open tabs, their DOM, network requests, cookies, and storage.`
+    ? `You are a sub-agent inside a browser automation system called Ouroboros. You are executing a focused sub-task. You can read any open tab's content, and you can create your own tabs if needed — but other agents may be working on existing tabs concurrently, so treat tabs you didn't open as read-only. Today's date is ${today}.`
+    : `You are an AI assistant operating inside a web browser called Ouroboros. You have programmatic access to all open tabs, their DOM, network requests, cookies, and storage. Today's date is ${today}.`
 
   const rules = [
     `- IMPORTANT: Tab IDs are STRINGS like "tab_0", "tab_1". Get them from \`tabs[0].id\` or \`activeTab\`, never use bare identifiers like tab_0.`,

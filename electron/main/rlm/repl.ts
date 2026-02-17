@@ -256,15 +256,21 @@ export class REPLRuntime {
 
       // Recursive LLM calls — data is passed as-is, no JSON.stringify wrapper
       async function llm_query(prompt, data) {
-        const args = data !== undefined ? [prompt, data] : [prompt];
+        // Unwrap truncated results — sub-agents just need the string content
+        let clean = data;
+        if (clean && typeof clean === 'object' && clean.__truncated) {
+          clean = clean.data;
+        }
+        const args = clean !== undefined ? [prompt, clean] : [prompt];
         return _llm_query.apply(undefined, args, { arguments: { copy: true }, result: { promise: true, copy: true } });
       }
 
       async function llm_batch(prompts) {
-        const normalized = prompts.map(p => ({
-          prompt: p.prompt || p,
-          data: p.data !== undefined ? p.data : undefined
-        }));
+        const normalized = prompts.map(p => {
+          let d = p.data;
+          if (d && typeof d === 'object' && d.__truncated) d = d.data;
+          return { prompt: p.prompt || p, data: d !== undefined ? d : undefined };
+        });
         return _llm_batch.apply(undefined, [normalized], { arguments: { copy: true }, result: { promise: true, copy: true } });
       }
 
