@@ -169,6 +169,36 @@ export class REPLRuntime {
         \`);
       }
 
+      async function getSearchResults(tabId) {
+        const code = '(' + function() {
+          var results = [];
+          var container = document.querySelector('#search') || document.body;
+          var h3s = container.querySelectorAll('h3');
+          for (var i = 0; i < h3s.length; i++) {
+            var h3 = h3s[i];
+            var a = h3.closest('a');
+            if (!a || !a.href) continue;
+            // Walk up to find a snippet near this result
+            var block = a.closest('[data-hveid]') || a.parentElement && a.parentElement.parentElement;
+            var snippet = '';
+            if (block) {
+              var textNodes = block.querySelectorAll('span, em');
+              var parts = [];
+              for (var j = 0; j < textNodes.length; j++) {
+                var t = textNodes[j].innerText;
+                if (t && t.length > 40 && t !== h3.innerText) {
+                  parts.push(t.trim());
+                }
+              }
+              snippet = parts.join(' ').slice(0, 300);
+            }
+            results.push({ title: h3.innerText.trim(), url: a.href, snippet: snippet });
+          }
+          return results;
+        } + ')()';
+        return execInTab(tabId, code);
+      }
+
       async function getInputs(tabId) {
         return execInTab(tabId, \`
           [...document.querySelectorAll('input, textarea, select')].map(el => ({
@@ -373,7 +403,7 @@ export class REPLRuntime {
         (() => {
           const BUILTIN_NAMES = new Set([
             'env', 'execInTab', 'openTab', 'closeTab', 'navigate', 'switchTab',
-            'waitForLoad', 'getText', 'getDOM', 'getLinks', 'getInputs',
+            'waitForLoad', 'getText', 'getDOM', 'getLinks', 'getSearchResults', 'getInputs',
             'querySelector', 'querySelectorAll', 'click', 'type', 'scroll',
             'log', 'sleep', 'setFinal', 'llm_query', 'llm_batch',
             'getAccessibilityTree', 'screenshot', 'getCookies', 'setCookie',
