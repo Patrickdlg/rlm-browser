@@ -68,6 +68,7 @@ export class RLMEngine {
     } catch (err: any) {
       this.status = 'error'
       this.emit(IPC.RLM_ERROR, { error: `Failed to initialize REPL: ${err.message}` })
+      this.emit(IPC.RLM_COMPLETE, { final: null })
       return
     }
 
@@ -127,6 +128,7 @@ export class RLMEngine {
           }
           this.status = 'error'
           this.emit(IPC.RLM_ERROR, { error: `LLM error: ${err.message}` })
+          this.emit(IPC.RLM_COMPLETE, { final: null })
           return
         }
 
@@ -150,6 +152,7 @@ export class RLMEngine {
           if (consecutiveNoCodes >= MAX_NO_CODE_CONTINUATIONS) {
             this.status = 'error'
             this.emit(IPC.RLM_ERROR, { error: 'Model failed to produce code after multiple attempts.' })
+            this.emit(IPC.RLM_COMPLETE, { final: null })
             return
           }
 
@@ -402,6 +405,8 @@ export class RLMEngine {
       this.abortController.abort()
     }
     this.status = 'cancelled'
+    // If the loop already exited (e.g. from an error), force-emit complete to reset the UI
+    this.emit(IPC.RLM_COMPLETE, { final: 'Task cancelled by user.' })
   }
 
   resolveConfirmation(approved: boolean): void {

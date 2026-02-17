@@ -283,13 +283,48 @@ export class REPLRuntime {
     `)
   }
 
+  /**
+   * Hoist top-level const/let/var declarations to globalThis so they persist
+   * across execute() calls. The IIFE wrapper scopes these otherwise.
+   * Transforms: `const x = value` → `x = value` (with `var x;` pre-declared globally)
+   */
+  private hoistVariables(code: string): { declarations: string; transformedCode: string } {
+    const varNames: string[] = []
+    // Match top-level declarations: const/let/var followed by identifier and =
+    // Skip lines inside for/while loops by checking context
+    const transformed = code.replace(
+      /^([ \t]*)(const|let|var)\s+(\w+)\s*=/gm,
+      (match, indent, _keyword, name, offset) => {
+        // Don't hoist if this is inside a for(...) statement
+        const before = code.slice(Math.max(0, offset - 30), offset)
+        if (/for\s*\(/.test(before)) return match
+        varNames.push(name)
+        return `${indent}${name} =`
+      }
+    )
+    return {
+      declarations: varNames.length > 0 ? `var ${varNames.join(', ')};` : '',
+      transformedCode: transformed,
+    }
+  }
+
   /** Execute LLM-generated code in the isolate */
   async execute(code: string): Promise<unknown> {
     if (!this.context) throw new Error('REPL not initialized')
 
     this.finalCalled = false
 
-    const wrappedCode = `(async () => { ${code} })()`
+    // Hoist variable declarations to global scope so they persist between executions
+    const { declarations, transformedCode } = this.hoistVariables(code)
+    if (declarations) {
+      try {
+        await this.context.eval(declarations, { timeout: 1000 })
+      } catch {
+        // Variable may already exist — that's fine
+      }
+    }
+
+    const wrappedCode = `(async () => { ${transformedCode} })()`
     try {
       const result = await this.context.eval(wrappedCode, {
         timeout: EXEC_TIMEOUT_MS,
@@ -312,35 +347,70 @@ export class REPLRuntime {
     return this.finalValue
   }
 
-  /** Get env variables metadata for context building */
+  /** Get env variables AND top-level user variables metadata for context building */
   async getEnvMetadata(): Promise<Record<string, unknown>> {
     if (!this.context) return {}
     try {
       const result = await this.context.eval(`
         (() => {
-          const meta = {};
-          for (const key of Object.keys(env)) {
-            const val = env[key];
+          const BUILTIN_NAMES = new Set([
+            'env', 'execInTab', 'openTab', 'closeTab', 'navigate', 'switchTab',
+            'waitForLoad', 'getText', 'getDOM', 'getLinks', 'getInputs',
+            'querySelector', 'querySelectorAll', 'click', 'type', 'scroll',
+            'log', 'sleep', 'setFinal', 'llm_query', 'llm_batch',
+            'getAccessibilityTree', 'screenshot', 'getCookies', 'setCookie',
+            'getLocalStorage', 'getSessionStorage', 'clearStorage',
+            'getRecentRequests', 'interceptRequests', 'getResponseBody',
+            'getConsoleLog', 'getErrors', 'fill', 'keyPress', 'hover', 'select',
+            'store', 'retrieve',
+            '_execInTab', '_openTab', '_closeTab', '_navigate', '_switchTab',
+            '_waitForLoad', '_getTabs', '_getActiveTab', '_log', '_setFinal',
+            '_llm_query', '_llm_batch',
+            'globalThis', 'undefined', 'NaN', 'Infinity',
+          ]);
+
+          function describeVar(val) {
+            if (val === null) return { type: 'null', value: 'null' };
+            if (val === undefined) return { type: 'undefined', value: 'undefined' };
             const type = Array.isArray(val) ? 'Array' : typeof val;
-            let desc;
             if (Array.isArray(val)) {
-              const elemType = val.length > 0 ? typeof val[0] : 'unknown';
-              desc = { type: 'Array<' + elemType + '>', length: val.length, size: JSON.stringify(val).length };
+              const elemType = val.length > 0 ? (typeof val[0] === 'object' && val[0] !== null ? 'Object' : typeof val[0]) : 'unknown';
+              const desc = { type: 'Array<' + elemType + '>', length: val.length, size: JSON.stringify(val).length };
               if (val.length > 0 && typeof val[0] === 'object' && val[0] !== null) {
                 desc.schema = Object.keys(val[0]).join(', ');
               }
               desc.preview = JSON.stringify(val).slice(0, 200);
-            } else if (type === 'object' && val !== null) {
+              return desc;
+            } else if (type === 'object') {
               const keys = Object.keys(val);
-              desc = { type: 'Object', keys: keys.length, keyNames: keys.join(', '), size: JSON.stringify(val).length };
-              desc.preview = JSON.stringify(val).slice(0, 200);
+              return { type: 'Object', keys: keys.length, keyNames: keys.join(', '), size: JSON.stringify(val).length, preview: JSON.stringify(val).slice(0, 200) };
             } else if (type === 'string') {
-              desc = { type: 'string', length: val.length, preview: val.slice(0, 200) };
+              return { type: 'string', length: val.length, preview: val.slice(0, 200) };
             } else {
-              desc = { type, value: String(val).slice(0, 200) };
+              return { type, value: String(val).slice(0, 200) };
             }
-            meta[key] = desc;
           }
+
+          const meta = {};
+
+          // Env variables
+          for (const key of Object.keys(env)) {
+            meta['env.' + key] = describeVar(env[key]);
+          }
+
+          // Top-level user variables (hoisted from const/let/var)
+          const globalKeys = Object.getOwnPropertyNames(globalThis);
+          for (const key of globalKeys) {
+            if (BUILTIN_NAMES.has(key)) continue;
+            if (key.startsWith('_')) continue;
+            if (key === 'tabs' || key === 'activeTab') continue;
+            try {
+              const val = globalThis[key];
+              if (typeof val === 'function') continue;
+              meta[key] = describeVar(val);
+            } catch {}
+          }
+
           return meta;
         })()
       `, { copy: true, timeout: 5000 })
