@@ -1,0 +1,365 @@
+import ivm from 'isolated-vm'
+import type { TabManager } from '../tabs/TabManager'
+import { capResult, SLEEP_CAP_MS, EXEC_TIMEOUT_MS, ISOLATE_MEMORY_LIMIT_MB } from './caps'
+
+export interface REPLCallbacks {
+  onLog: (message: string) => void
+  onSetFinal: (value: unknown) => void
+  onSubCall: (prompt: string, data?: unknown) => Promise<string>
+  onSubBatch: (prompts: Array<{ prompt: string; data?: unknown }>) => Promise<Array<{ status: string; value?: string; error?: string }>>
+}
+
+export class REPLRuntime {
+  private isolate: ivm.Isolate | null = null
+  private context: ivm.Context | null = null
+  private tabManager: TabManager
+  private callbacks: REPLCallbacks
+  private finalValue: unknown = undefined
+  private finalCalled = false
+
+  constructor(tabManager: TabManager, callbacks: REPLCallbacks) {
+    this.tabManager = tabManager
+    this.callbacks = callbacks
+  }
+
+  async initialize(): Promise<void> {
+    this.isolate = new ivm.Isolate({ memoryLimit: ISOLATE_MEMORY_LIMIT_MB })
+    this.context = await this.isolate.createContext()
+
+    const jail = this.context.global
+
+    // --- Expose host function references ---
+
+    // execInTab(tabId, code) -> result
+    await jail.set('_execInTab', new ivm.Reference(async (tabId: string, code: string) => {
+      const result = await this.tabManager.exec(tabId, code)
+      return new ivm.ExternalCopy(capResult(result)).copyInto()
+    }))
+
+    // openTab(url?) -> tabId
+    await jail.set('_openTab', new ivm.Reference(async (url?: string) => {
+      return this.tabManager.openTab(url || undefined)
+    }))
+
+    // closeTab(tabId)
+    await jail.set('_closeTab', new ivm.Reference((tabId: string) => {
+      this.tabManager.closeTab(tabId)
+    }))
+
+    // navigate(tabId, url)
+    await jail.set('_navigate', new ivm.Reference((tabId: string, url: string) => {
+      this.tabManager.navigate(tabId, url)
+    }))
+
+    // switchTab(tabId)
+    await jail.set('_switchTab', new ivm.Reference((tabId: string) => {
+      this.tabManager.switchTab(tabId)
+    }))
+
+    // waitForLoad(tabId, timeout?)
+    await jail.set('_waitForLoad', new ivm.Reference(async (tabId: string, timeout?: number) => {
+      await this.tabManager.waitForLoad(tabId, timeout)
+    }))
+
+    // getTabs() -> TabInfo[]
+    await jail.set('_getTabs', new ivm.Reference(() => {
+      return new ivm.ExternalCopy(this.tabManager.getAllTabs()).copyInto()
+    }))
+
+    // getActiveTab() -> tabId
+    await jail.set('_getActiveTab', new ivm.Reference(() => {
+      return this.tabManager.getActiveTabId()
+    }))
+
+    // log(message)
+    await jail.set('_log', new ivm.Reference((message: string) => {
+      this.callbacks.onLog(String(message))
+    }))
+
+    // setFinal(value)
+    await jail.set('_setFinal', new ivm.Reference((value: unknown) => {
+      this.finalCalled = true
+      this.finalValue = value
+      this.callbacks.onSetFinal(value)
+    }))
+
+    // llm_query(prompt, data?) -> string
+    await jail.set('_llm_query', new ivm.Reference(async (prompt: string, data?: unknown) => {
+      return await this.callbacks.onSubCall(prompt, data)
+    }))
+
+    // llm_batch(prompts) -> Array<{status, value?, error?}>
+    await jail.set('_llm_batch', new ivm.Reference(async (prompts: Array<{ prompt: string; data?: unknown }>) => {
+      const results = await this.callbacks.onSubBatch(prompts)
+      return new ivm.ExternalCopy(results).copyInto()
+    }))
+
+    // --- Bootstrap the REPL environment inside the isolate ---
+    await this.context.eval(`
+      // env object for user variable storage
+      const env = {};
+
+      // Tab management
+      async function execInTab(tabId, code) {
+        return _execInTab.apply(undefined, [tabId, code], { arguments: { copy: true }, result: { promise: true, copy: true } });
+      }
+      async function openTab(url) {
+        return _openTab.apply(undefined, [url || ''], { arguments: { copy: true }, result: { promise: true, copy: true } });
+      }
+      function closeTab(tabId) {
+        _closeTab.applySync(undefined, [tabId], { arguments: { copy: true } });
+      }
+      function navigate(tabId, url) {
+        _navigate.applySync(undefined, [tabId, url], { arguments: { copy: true } });
+      }
+      function switchTab(tabId) {
+        _switchTab.applySync(undefined, [tabId], { arguments: { copy: true } });
+      }
+      async function waitForLoad(tabId, timeout) {
+        return _waitForLoad.apply(undefined, [tabId, timeout || 30000], { arguments: { copy: true }, result: { promise: true } });
+      }
+
+      // Tab getters (evaluated fresh each call via Reference)
+      Object.defineProperty(globalThis, 'tabs', {
+        get() { return _getTabs.applySync(undefined, [], { result: { copy: true } }); }
+      });
+      Object.defineProperty(globalThis, 'activeTab', {
+        get() { return _getActiveTab.applySync(undefined, [], { result: { copy: true } }); }
+      });
+
+      // DOM introspection convenience wrappers (all via execInTab)
+      async function getText(tabId, selector) {
+        const sel = selector ? JSON.stringify(selector) : 'null';
+        return execInTab(tabId, \`
+          (() => {
+            const el = \${sel} ? document.querySelector(\${sel}) : document.body;
+            return el ? el.innerText : null;
+          })()
+        \`);
+      }
+
+      async function getDOM(tabId, selector) {
+        const sel = selector ? JSON.stringify(selector) : 'null';
+        return execInTab(tabId, \`
+          (() => {
+            const el = \${sel} ? document.querySelector(\${sel}) : document.documentElement;
+            return el ? el.outerHTML : null;
+          })()
+        \`);
+      }
+
+      async function getLinks(tabId) {
+        return execInTab(tabId, \`
+          [...document.querySelectorAll('a[href]')].map(a => ({
+            text: a.innerText.trim().slice(0, 100),
+            href: a.href
+          }))
+        \`);
+      }
+
+      async function getInputs(tabId) {
+        return execInTab(tabId, \`
+          [...document.querySelectorAll('input, textarea, select')].map(el => ({
+            id: el.id || '',
+            name: el.name || '',
+            type: el.type || el.tagName.toLowerCase(),
+            value: el.value || '',
+            placeholder: el.placeholder || ''
+          }))
+        \`);
+      }
+
+      async function querySelector(tabId, sel) {
+        return execInTab(tabId, \`
+          (() => {
+            const el = document.querySelector(\${JSON.stringify(sel)});
+            if (!el) return null;
+            return {
+              tagName: el.tagName,
+              id: el.id || '',
+              className: el.className || '',
+              innerText: (el.innerText || '').slice(0, 200),
+              href: el.href || '',
+              src: el.src || '',
+              value: el.value || '',
+              type: el.type || ''
+            };
+          })()
+        \`);
+      }
+
+      async function querySelectorAll(tabId, sel) {
+        return execInTab(tabId, \`
+          [...document.querySelectorAll(\${JSON.stringify(sel)})].map(el => ({
+            tagName: el.tagName,
+            id: el.id || '',
+            className: (typeof el.className === 'string' ? el.className : '').slice(0, 100),
+            innerText: (el.innerText || '').slice(0, 200),
+            href: el.href || '',
+            src: el.src || ''
+          }))
+        \`);
+      }
+
+      // Browser actions
+      async function click(tabId, selector) {
+        return execInTab(tabId, \`
+          (() => {
+            const el = document.querySelector(\${JSON.stringify(selector)});
+            if (!el) throw new Error('Element not found: ' + \${JSON.stringify(selector)});
+            el.click();
+            return true;
+          })()
+        \`);
+      }
+
+      async function type(tabId, selector, text) {
+        return execInTab(tabId, \`
+          (() => {
+            const el = document.querySelector(\${JSON.stringify(selector)});
+            if (!el) throw new Error('Element not found: ' + \${JSON.stringify(selector)});
+            el.focus();
+            el.value = \${JSON.stringify(text)};
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          })()
+        \`);
+      }
+
+      // Utility functions
+      function log(message) {
+        _log.applySync(undefined, [String(message)], { arguments: { copy: true } });
+      }
+
+      async function sleep(ms) {
+        const capped = Math.min(ms, ${SLEEP_CAP_MS});
+        return new Promise(resolve => setTimeout(resolve, capped));
+      }
+
+      function setFinal(value) {
+        const serializable = JSON.parse(JSON.stringify(value));
+        _setFinal.applySync(undefined, [serializable], { arguments: { copy: true } });
+      }
+
+      // Recursive LLM calls
+      async function llm_query(prompt, data) {
+        const args = data !== undefined ? [prompt, JSON.stringify(data)] : [prompt];
+        return _llm_query.apply(undefined, args, { arguments: { copy: true }, result: { promise: true, copy: true } });
+      }
+
+      async function llm_batch(prompts) {
+        const serialized = prompts.map(p => ({
+          prompt: p.prompt || p,
+          data: p.data ? JSON.stringify(p.data) : undefined
+        }));
+        return _llm_batch.apply(undefined, [serialized], { arguments: { copy: true }, result: { promise: true, copy: true } });
+      }
+
+      // Stubs for deferred APIs
+      async function getAccessibilityTree() { throw new Error('getAccessibilityTree not yet implemented'); }
+      async function screenshot() { throw new Error('screenshot not yet implemented'); }
+      async function getCookies() { throw new Error('getCookies not yet implemented'); }
+      async function setCookie() { throw new Error('setCookie not yet implemented'); }
+      async function getLocalStorage() { throw new Error('getLocalStorage not yet implemented'); }
+      async function getSessionStorage() { throw new Error('getSessionStorage not yet implemented'); }
+      async function clearStorage() { throw new Error('clearStorage not yet implemented'); }
+      async function getRecentRequests() { throw new Error('getRecentRequests not yet implemented'); }
+      async function interceptRequests() { throw new Error('interceptRequests not yet implemented'); }
+      async function getResponseBody() { throw new Error('getResponseBody not yet implemented'); }
+      async function getConsoleLog() { throw new Error('getConsoleLog not yet implemented'); }
+      async function getErrors() { throw new Error('getErrors not yet implemented'); }
+      async function fill() { throw new Error('fill not yet implemented'); }
+      async function scroll(tabId, direction, amount) {
+        const amt = amount || 500;
+        const dir = direction === 'up' ? -amt : amt;
+        return execInTab(tabId, \`window.scrollBy(0, \${dir})\`);
+      }
+      async function keyPress() { throw new Error('keyPress not yet implemented'); }
+      async function hover() { throw new Error('hover not yet implemented'); }
+      async function select() { throw new Error('select not yet implemented'); }
+      async function store() { throw new Error('store not yet implemented — will be wired in Phase 6'); }
+      async function retrieve() { throw new Error('retrieve not yet implemented — will be wired in Phase 6'); }
+    `)
+  }
+
+  /** Execute LLM-generated code in the isolate */
+  async execute(code: string): Promise<unknown> {
+    if (!this.context) throw new Error('REPL not initialized')
+
+    this.finalCalled = false
+
+    const wrappedCode = `(async () => { ${code} })()`
+    try {
+      const result = await this.context.eval(wrappedCode, {
+        timeout: EXEC_TIMEOUT_MS,
+        promise: true,
+        copy: true,
+      })
+      return capResult(result)
+    } catch (err: any) {
+      return { __rlm_error: true, message: err.message, stack: err.stack?.slice(0, 500) }
+    }
+  }
+
+  /** Check if setFinal() was called during the last execution */
+  isFinalCalled(): boolean {
+    return this.finalCalled
+  }
+
+  /** Get the value passed to setFinal() */
+  getFinalValue(): unknown {
+    return this.finalValue
+  }
+
+  /** Get env variables metadata for context building */
+  async getEnvMetadata(): Promise<Record<string, unknown>> {
+    if (!this.context) return {}
+    try {
+      const result = await this.context.eval(`
+        (() => {
+          const meta = {};
+          for (const key of Object.keys(env)) {
+            const val = env[key];
+            const type = Array.isArray(val) ? 'Array' : typeof val;
+            let desc;
+            if (Array.isArray(val)) {
+              const elemType = val.length > 0 ? typeof val[0] : 'unknown';
+              desc = { type: 'Array<' + elemType + '>', length: val.length, size: JSON.stringify(val).length };
+              if (val.length > 0 && typeof val[0] === 'object' && val[0] !== null) {
+                desc.schema = Object.keys(val[0]).join(', ');
+              }
+              desc.preview = JSON.stringify(val).slice(0, 200);
+            } else if (type === 'object' && val !== null) {
+              const keys = Object.keys(val);
+              desc = { type: 'Object', keys: keys.length, keyNames: keys.join(', '), size: JSON.stringify(val).length };
+              desc.preview = JSON.stringify(val).slice(0, 200);
+            } else if (type === 'string') {
+              desc = { type: 'string', length: val.length, preview: val.slice(0, 200) };
+            } else {
+              desc = { type, value: String(val).slice(0, 200) };
+            }
+            meta[key] = desc;
+          }
+          return meta;
+        })()
+      `, { copy: true, timeout: 5000 })
+      return result as Record<string, unknown>
+    } catch {
+      return {}
+    }
+  }
+
+  /** Destroy the isolate and free resources */
+  dispose(): void {
+    if (this.isolate) {
+      try {
+        this.isolate.dispose()
+      } catch {
+        // Already disposed
+      }
+      this.isolate = null
+      this.context = null
+    }
+  }
+}
