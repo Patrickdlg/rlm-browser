@@ -181,11 +181,12 @@ export class RLMEngine {
           this.emit(IPC.RLM_CODE_GENERATED, { code, blockIndex: bi })
 
           const result = await this.repl.execute(code)
-          const metadata = this.summarize(code, result)
+          const metadata = this.summarize(code, result)       // full (code + result) for LLM history
+          const resultMeta = this.summarizeResult(result)      // result-only for UI
           const isError = result !== null && typeof result === 'object' && (result as any).__rlm_error
 
           blocks.push({ code, metadata, error: isError ? (result as any).message : undefined })
-          this.emit(IPC.RLM_CODE_RESULT, { metadata, blockIndex: bi, error: isError ? (result as any).message : undefined })
+          this.emit(IPC.RLM_CODE_RESULT, { metadata: resultMeta, blockIndex: bi, error: isError ? (result as any).message : undefined })
 
           if (this.repl.isFinalCalled()) {
             finalCalled = true
@@ -408,49 +409,49 @@ export class RLMEngine {
     })
   }
 
-  /** Generate rich metadata summary for a code execution result */
-  private summarize(code: string, result: unknown): string {
-    let summary = `Code:\n  ${code.split('\n').join('\n  ')}\n`
-
+  /** Generate result-only summary (for UI display — code is shown separately) */
+  private summarizeResult(result: unknown): string {
     if (result === undefined) {
-      summary += 'Result: void'
+      return 'void'
     } else if (result === null) {
-      summary += 'Result: null'
+      return 'null'
     } else if (typeof result === 'object' && (result as any).__rlm_error) {
-      summary += `Result: ERROR — ${(result as any).message}`
-      if ((result as any).stack) {
-        summary += `\n  Stack: ${(result as any).stack.slice(0, 300)}`
-      }
+      let s = `ERROR — ${(result as any).message}`
+      if ((result as any).stack) s += `\n  Stack: ${(result as any).stack.slice(0, 300)}`
+      return s
     } else if (typeof result === 'object' && (result as any).__truncated) {
-      summary += `Result: TRUNCATED (original ${(result as any).originalLength} chars). Use a more specific selector to narrow results.`
-      summary += `\nPreview: ${String((result as any).data).slice(0, PREVIEW_MAX_CHARS)}`
+      return `TRUNCATED (original ${(result as any).originalLength} chars). Use a more specific selector.\nPreview: ${String((result as any).data).slice(0, PREVIEW_MAX_CHARS)}`
     } else if (Array.isArray(result)) {
       const str = JSON.stringify(result)
       const size = str?.length ?? 0
       const elemType = result.length > 0 ? this.describeType(result[0]) : 'empty'
-      summary += `Result: Array<${elemType}> (${result.length} items, ${size} chars total)`
+      let s = `Array<${elemType}> (${result.length} items, ${size} chars)`
       if (result.length > 0 && typeof result[0] === 'object' && result[0] !== null) {
-        summary += `\nElement schema: ${this.describeObjectSchema(result[0])}`
+        s += `\nSchema: ${this.describeObjectSchema(result[0])}`
       }
       const preview = JSON.stringify(result.slice(0, 2), null, 0)
-      summary += `\nPreview (first 2): ${preview?.slice(0, PREVIEW_MAX_CHARS) ?? ''}`
-      if (result.length > 2) summary += `\n... and ${result.length - 2} more items`
+      s += `\nPreview: ${preview?.slice(0, PREVIEW_MAX_CHARS) ?? ''}`
+      if (result.length > 2) s += `\n... and ${result.length - 2} more`
+      return s
     } else if (typeof result === 'object') {
       const str = JSON.stringify(result)
       const size = str?.length ?? 0
       const keys = Object.keys(result as object)
-      summary += `Result: Object (${keys.length} keys, ${size} chars)`
-      summary += `\nSchema: ${this.describeObjectSchema(result)}`
-      summary += `\nPreview: ${str?.slice(0, PREVIEW_MAX_CHARS) ?? ''}${size > PREVIEW_MAX_CHARS ? '...' : ''}`
+      let s = `Object (${keys.length} keys, ${size} chars)`
+      s += `\nSchema: ${this.describeObjectSchema(result)}`
+      s += `\nPreview: ${str?.slice(0, PREVIEW_MAX_CHARS) ?? ''}${size > PREVIEW_MAX_CHARS ? '...' : ''}`
+      return s
     } else if (typeof result === 'string' && result.length > 300) {
-      summary += `Result: string (${result.length} chars)`
-      summary += `\nPreview: "${result.slice(0, 250)}..."`
+      return `string (${result.length} chars)\nPreview: "${result.slice(0, 250)}..."`
     } else {
       const str = JSON.stringify(result)
-      summary += `Result: ${typeof result} = ${str?.slice(0, 300) ?? String(result)}`
+      return `${typeof result} = ${str?.slice(0, 300) ?? String(result)}`
     }
+  }
 
-    return summary
+  /** Generate full metadata summary with code (for LLM history context) */
+  private summarize(code: string, result: unknown): string {
+    return `Code:\n  ${code.split('\n').join('\n  ')}\nResult: ${this.summarizeResult(result)}`
   }
 
   /** Describe the schema of an object */

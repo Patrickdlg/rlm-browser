@@ -63,13 +63,18 @@ export default function App() {
         setCurrentIteration(data.iteration)
         setStreamTokens('')
         iterStartTime.current = Date.now()
-        setIterations(prev => [...prev, {
-          number: data.iteration,
-          tokens: '',
-          codeBlocks: [],
-          subCalls: [],
-          complete: false,
-        }])
+        setIterations(prev => {
+          // Mark previous iteration as complete
+          const next = prev.map(iter => iter.complete ? iter : { ...iter, complete: true, durationMs: iter.durationMs || (Date.now() - iterStartTime.current) })
+          next.push({
+            number: data.iteration,
+            tokens: '',
+            codeBlocks: [],
+            subCalls: [],
+            complete: false,
+          })
+          return next
+        })
       }),
 
       window.electronAPI.onStreamToken((data) => {
@@ -87,7 +92,10 @@ export default function App() {
           const next = [...prev]
           const last = next[next.length - 1]
           if (last) {
-            last.codeBlocks.push({ code: data.code })
+            // Use blockIndex for indexed assignment — prevents duplicates from HMR/StrictMode
+            if (!last.codeBlocks[data.blockIndex]) {
+              last.codeBlocks[data.blockIndex] = { code: data.code }
+            }
           }
           return next
         })
@@ -97,8 +105,8 @@ export default function App() {
         setIterations(prev => {
           const next = [...prev]
           const last = next[next.length - 1]
-          if (last && last.codeBlocks.length > 0) {
-            const block = last.codeBlocks[data.blockIndex] || last.codeBlocks[last.codeBlocks.length - 1]
+          if (last) {
+            const block = last.codeBlocks[data.blockIndex]
             if (block) {
               block.result = data.metadata
               block.error = data.error

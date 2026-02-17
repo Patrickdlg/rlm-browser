@@ -38,8 +38,8 @@ export default function IterationCard({ iteration, isActive, streamTokens }: Ite
       {/* Expanded content */}
       {expanded && (
         <div className="px-3 pb-2 space-y-2">
-          {/* Streaming tokens (while active) */}
-          {isActive && streamTokens && (
+          {/* Streaming tokens — only show while active AND before any code blocks arrive */}
+          {isActive && streamTokens && iteration.codeBlocks.length === 0 && (
             <div className="bg-[#181825] rounded p-2 text-xs">
               <pre className="whitespace-pre-wrap font-mono text-[#a6adc8] max-h-40 overflow-y-auto">
                 {streamTokens}
