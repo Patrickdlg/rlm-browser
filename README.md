@@ -112,4 +112,4 @@ npm run package   # Package for distribution
 
 ## License
 
-MIT
+Copyright 2026 Patrick De La Garza. All rights reserved.
