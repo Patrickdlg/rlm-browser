@@ -1,6 +1,6 @@
 import ivm from 'isolated-vm'
 import type { TabManager } from '../tabs/TabManager'
-import { capResult, SLEEP_CAP_MS, EXEC_TIMEOUT_MS, ISOLATE_MEMORY_LIMIT_MB } from './caps'
+import { capResult, SLEEP_CAP_MS, EXEC_TIMEOUT_MS, ISOLATE_MEMORY_LIMIT_MB, LOG_MAX_CHARS } from './caps'
 
 export interface REPLCallbacks {
   onLog: (message: string) => void
@@ -71,9 +71,13 @@ export class REPLRuntime {
       return this.tabManager.getActiveTabId()
     }))
 
-    // log(message)
+    // log(message) — auto-truncated to LOG_MAX_CHARS
     await jail.set('_log', new ivm.Reference((message: string) => {
-      this.callbacks.onLog(String(message))
+      const str = String(message)
+      const truncated = str.length > LOG_MAX_CHARS
+        ? str.slice(0, LOG_MAX_CHARS) + `\n... (truncated, ${str.length} chars total)`
+        : str
+      this.callbacks.onLog(truncated)
     }))
 
     // setFinal(value)

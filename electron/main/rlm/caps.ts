@@ -34,6 +34,9 @@ export const PREVIEW_MAX_CHARS = 400
 /** Max chars for variable preview in env metadata */
 export const VAR_PREVIEW_MAX_CHARS = 200
 
+/** Max chars for log() messages before truncation */
+export const LOG_MAX_CHARS = 5_000
+
 /** Memory limit for isolated-vm in MB */
 export const ISOLATE_MEMORY_LIMIT_MB = 128
 

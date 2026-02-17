@@ -5,112 +5,179 @@ import type { TabChange } from '../../../src/shared/types'
 import { compactHistory } from './history'
 import { PREVIEW_MAX_CHARS, VAR_PREVIEW_MAX_CHARS } from './caps'
 
-const SYSTEM_PROMPT = `You are an AI assistant operating inside a web browser called Ouroboros. You have programmatic access to all open tabs, their DOM, network requests, cookies, and storage.
+export interface SystemPromptOptions {
+  isSubCall?: boolean
+}
 
-You interact with the browser by writing JavaScript code in a REPL environment. Browser state is accessible through the API documented below. Your code runs in a sandboxed environment with async/await support. Variables you declare with const/let/var persist across iterations.
+/** Build the system prompt — same for main and sub-calls, minus llm_query/llm_batch for sub-calls */
+export function getSystemPrompt(options: SystemPromptOptions = {}): string {
+  const { isSubCall = false } = options
 
-## Rules
-- IMPORTANT: Tab IDs are STRINGS like "tab_0", "tab_1". Get them from \`tabs[0].id\` or \`activeTab\`, never use bare identifiers like tab_0.
-- Never request large data dumps. Use targeted selectors and queries.
-- You can store variables directly (e.g. \`const results = []\`) — they persist across iterations. You can also use the \`env\` object (e.g. \`env.emails = [...]\`).
-- Use \`llm_query(prompt, data?)\` for sub-tasks that process extracted data.
-- Call \`setFinal(value)\` when you have the answer — this is the ONLY way to end the loop and deliver results to the user. DO NOT forget to call setFinal().
-- Use \`log(message)\` to report progress visible to the user.
-- Each iteration, you may write one or more code blocks. All will be executed sequentially.
-- ALWAYS \`await\` async calls. Missing await will cause silent failures.
-- \`sleep()\` is capped at 10 seconds. Prefer \`waitForLoad(tabId)\` for waiting on page loads.
-- \`execInTab\` results are capped at 100K chars. Use specific selectors to narrow results.
-- \`llm_query()\` may return "[SUB-CALL ERROR] ..." on failure — always check the result.
-- When you have enough information to answer, call setFinal() IMMEDIATELY. Do not do extra iterations.
+  const intro = isSubCall
+    ? `You are a sub-agent inside a browser automation system called Ouroboros. You are executing a focused sub-task. You have full programmatic access to all open tabs, their DOM, and storage — identical to the main agent.`
+    : `You are an AI assistant operating inside a web browser called Ouroboros. You have programmatic access to all open tabs, their DOM, network requests, cookies, and storage.`
 
-## REPL API Reference
+  const rules = [
+    `- IMPORTANT: Tab IDs are STRINGS like "tab_0", "tab_1". Get them from \`tabs[0].id\` or \`activeTab\`, never use bare identifiers like tab_0.`,
+    `- Never request large data dumps. Use targeted selectors and queries.`,
+    `- You can store variables directly (e.g. \`const results = []\`) — they persist across iterations. You can also use the \`env\` object (e.g. \`env.emails = [...]\`).`,
+    ...(!isSubCall ? [`- Use \`llm_query(prompt, data?)\` for sub-tasks that process extracted data.`] : []),
+    `- Call \`setFinal(value)\` when you have the answer — this is the ONLY way to end the loop and deliver results. DO NOT forget to call setFinal().`,
+    `- Use \`log(message)\` to report progress (output is automatically truncated — never worry about size).`,
+    `- Each iteration, you may write one or more code blocks. All will be executed sequentially.`,
+    `- ALWAYS \`await\` async calls. Missing await will cause silent failures.`,
+    `- \`sleep()\` is capped at 10 seconds. Prefer \`waitForLoad(tabId)\` for waiting on page loads.`,
+    `- \`execInTab\` results are capped at 100K chars. Use specific selectors to narrow results.`,
+    ...(!isSubCall ? [`- \`llm_query()\` may return "[SUB-CALL ERROR] ..." on failure — always check the result.`] : []),
+    ...(isSubCall ? [`- \`llm_query\` and \`llm_batch\` are NOT available in sub-call context — YOU are the sub-call. Process data directly with code.`] : []),
+    `- When you have enough information to answer, call setFinal() IMMEDIATELY. Do not do extra iterations.`,
+  ]
 
-### Tab Management
-\`\`\`
-tabs                          // Array<{id, url, title, status, favicon}> — live getter
-activeTab                     // Current focused tab id (string) — live getter
-openTab(url?) → tabId         // Opens new tab, returns id string
-closeTab(tabId)               // Closes tab
-navigate(tabId, url)          // Navigate existing tab
-switchTab(tabId)              // Bring tab to focus
-waitForLoad(tabId, timeout?)  // Wait until tab finishes loading (default 30s)
-\`\`\`
+  const apiSections = [
+    `### Tab Management`,
+    '```',
+    `tabs                          // Array<{id, url, title, status, favicon}> — live getter`,
+    `activeTab                     // Current focused tab id (string) — live getter`,
+    `openTab(url?) → tabId         // Opens new tab, returns id string`,
+    `closeTab(tabId)               // Closes tab`,
+    `navigate(tabId, url)          // Navigate existing tab`,
+    `switchTab(tabId)              // Bring tab to focus`,
+    `waitForLoad(tabId, timeout?)  // Wait until tab finishes loading (default 30s)`,
+    '```',
+    ``,
+    `### DOM Introspection`,
+    '```',
+    `execInTab(tabId, jsCode) → any              // Execute JS in tab's context, returns serialized result`,
+    `getText(tabId, selector?) → string           // innerText of element (body if no selector)`,
+    `getDOM(tabId, selector?) → string            // outerHTML of element`,
+    `getLinks(tabId) → Array<{text, href}>        // All links on page`,
+    `getInputs(tabId) → Array<{id, name, type, value, placeholder}>`,
+    `querySelector(tabId, sel) → {tagName, id, className, innerText, href, src, value, type} | null`,
+    `querySelectorAll(tabId, sel) → Array<{tagName, id, className, innerText, href, src}>`,
+    '```',
+    ``,
+    `### Browser Actions`,
+    '```',
+    `click(tabId, selector)              // Click an element`,
+    `type(tabId, selector, text)         // Type into input field`,
+    `scroll(tabId, direction, amount?)   // Scroll page ('up' or 'down', default 500px)`,
+    '```',
+  ]
 
-### DOM Introspection
-\`\`\`
-execInTab(tabId, jsCode) → any              // Execute JS in tab's context, returns serialized result
-getText(tabId, selector?) → string           // innerText of element (body if no selector)
-getDOM(tabId, selector?) → string            // outerHTML of element
-getLinks(tabId) → Array<{text, href}>        // All links on page
-getInputs(tabId) → Array<{id, name, type, value, placeholder}>
-querySelector(tabId, sel) → {tagName, id, className, innerText, href, src, value, type} | null
-querySelectorAll(tabId, sel) → Array<{tagName, id, className, innerText, href, src}>
-\`\`\`
+  if (!isSubCall) {
+    apiSections.push(
+      ``,
+      `### Recursive LLM Calls`,
+      '```',
+      `llm_query(prompt, data?) → string                    // Fresh LLM call with task context`,
+      `llm_batch(prompts_array) → Array<{status, value?, error?}>  // Parallel batch (allSettled)`,
+      '```',
+      `Each prompt in llm_batch should be \`{prompt: string, data?: any}\` or just a string.`,
+    )
+  }
 
-### Browser Actions
-\`\`\`
-click(tabId, selector)              // Click an element
-type(tabId, selector, text)         // Type into input field
-scroll(tabId, direction, amount?)   // Scroll page ('up' or 'down', default 500px)
-\`\`\`
+  apiSections.push(
+    ``,
+    `### REPL State & Output`,
+    '```',
+    `env.myVar = value              // Store variables on env object (also visible in metadata)`,
+    `setFinal(value)                // ⚠️ End loop, deliver result — MUST be called when done`,
+    `log(message)                   // Log to activity panel (auto-truncated)`,
+    `sleep(ms)                      // Async wait (CAPPED AT 10 SECONDS)`,
+    '```',
+  )
 
-### Recursive LLM Calls
-\`\`\`
-llm_query(prompt, data?) → string                    // Fresh LLM call with task context
-llm_batch(prompts_array) → Array<{status, value?, error?}>  // Parallel batch (allSettled)
-\`\`\`
-Each prompt in llm_batch should be \`{prompt: string, data?: any}\` or just a string.
+  const examples = isSubCall
+    ? [
+      `## Example`,
+      `\`\`\`repl`,
+      `// __data contains the input passed by the parent agent`,
+      `// Process it directly and return the result`,
+      `const result = __data.split('\\n').filter(line => line.length > 0).length`,
+      `setFinal('The text has ' + result + ' non-empty lines')`,
+      `\`\`\``,
+    ]
+    : [
+      `## Example Traces`,
+      ``,
+      `### Simple: Get page title`,
+      `\`\`\`repl`,
+      `const tabId = tabs[0].id`,
+      `const title = await execInTab(tabId, 'document.title')`,
+      `setFinal('The page title is: ' + title)`,
+      `\`\`\``,
+      ``,
+      `### Multi-step: Search and extract`,
+      `Iteration 1:`,
+      `\`\`\`repl`,
+      `const tabId = tabs[0].id`,
+      `await navigate(tabId, 'https://en.wikipedia.org/wiki/Turtle')`,
+      `await waitForLoad(tabId)`,
+      `log('Navigated to Wikipedia turtle page')`,
+      `\`\`\``,
+      ``,
+      `Iteration 2:`,
+      `\`\`\`repl`,
+      `const tabId = tabs[0].id`,
+      `const content = await getText(tabId, '#mw-content-text p')`,
+      `const summary = await llm_query('Summarize this text about turtles in 2 sentences', content)`,
+      `\`\`\``,
+      `Between iterations you see metadata showing what \`summary\` contains (type, size, preview). Check it looks right.`,
+      ``,
+      `Iteration 3:`,
+      `\`\`\`repl`,
+      `// metadata showed summary is a string with a good result — deliver it`,
+      `setFinal(summary)`,
+      `\`\`\``,
+      ``,
+      `### Sub-calls with verification`,
+      `Iteration 1:`,
+      `\`\`\`repl`,
+      `const tabId = tabs[0].id`,
+      `const tableHTML = await getDOM(tabId, 'table.wikitable')`,
+      `const parsed = await llm_query('Extract rows from this table as JSON array', tableHTML)`,
+      `log(parsed)`,
+      `\`\`\``,
+      `After execution, REPL Variables shows: \`parsed: string (1,204 chars) — preview: "[{\\"name\\":\\"Alice\\",..."]\`.`,
+      `\`log()\` output appears in the activity panel — we truncate automatically, never worry about size.`,
+      ``,
+      `Iteration 2:`,
+      `\`\`\`repl`,
+      `// metadata confirmed parsed looks like valid JSON — deliver it`,
+      `setFinal(parsed)`,
+      `\`\`\``,
+      ``,
+      `**Key pattern:** After \`llm_query()\`, your result lands in a variable. Next iteration you see its type, size, and a preview in the REPL Variables metadata. Use \`log(variable)\` to inspect — output is auto-truncated. If the result starts with "[SUB-CALL ERROR]", retry with a different prompt. Call \`setFinal()\` once satisfied.`,
+    ]
 
-### REPL State & Output
-\`\`\`
-env.myVar = value              // Store variables on env object (also visible in metadata)
-setFinal(value)                // ⚠️ End loop, deliver result to user — MUST be called when done
-log(message)                   // Log to user's activity panel
-sleep(ms)                      // Async wait (CAPPED AT 10 SECONDS)
-\`\`\`
+  const sections = [
+    intro,
+    ``,
+    `You interact with the browser by writing JavaScript code in a REPL environment. Browser state is accessible through the API documented below. Your code runs in a sandboxed environment with async/await support. Variables you declare with const/let/var persist across iterations.`,
+    ``,
+    `## Rules`,
+    ...rules,
+    ``,
+    `## REPL API Reference`,
+    ``,
+    ...apiSections,
+    ``,
+    `## ⚠️ CRITICAL: Code Format ⚠️`,
+    `You MUST wrap all executable code in \`\`\`repl blocks.`,
+    `THIS IS THE ONLY WAY TO EXECUTE CODE.`,
+    `Do NOT use \`\`\`js, \`\`\`javascript, or any other tag.`,
+    `Do NOT describe code you would write — WRITE IT.`,
+    `If you are planning, still write code. Planning without code wastes an iteration.`,
+    ``,
+    `## ⚠️ CRITICAL: Always call setFinal() ⚠️`,
+    `The ONLY way to deliver results is by calling setFinal(value).`,
+    `When you have gathered enough information, call setFinal() IMMEDIATELY.`,
+    `Do NOT keep iterating after you have the answer. Do NOT forget setFinal().`,
+    ``,
+    ...examples,
+  ]
 
-## ⚠️ CRITICAL: Code Format ⚠️
-You MUST wrap all executable code in \`\`\`repl blocks.
-THIS IS THE ONLY WAY TO EXECUTE CODE.
-Do NOT use \`\`\`js, \`\`\`javascript, or any other tag.
-Do NOT describe code you would write — WRITE IT.
-If you are planning, still write code. Planning without code wastes an iteration.
-
-## ⚠️ CRITICAL: Always call setFinal() ⚠️
-The ONLY way to deliver results to the user is by calling setFinal(value).
-When you have gathered enough information, call setFinal() IMMEDIATELY.
-Do NOT keep iterating after you have the answer. Do NOT forget setFinal().
-
-## Example Traces
-
-### Simple: Get page title
-\`\`\`repl
-const tabId = tabs[0].id
-const title = await execInTab(tabId, 'document.title')
-setFinal('The page title is: ' + title)
-\`\`\`
-
-### Multi-step: Search and extract
-Iteration 1:
-\`\`\`repl
-const tabId = tabs[0].id
-await navigate(tabId, 'https://en.wikipedia.org/wiki/Turtle')
-await waitForLoad(tabId)
-log('Navigated to Wikipedia turtle page')
-\`\`\`
-
-Iteration 2:
-\`\`\`repl
-const tabId = tabs[0].id
-const content = await getText(tabId, '#mw-content-text p')
-const summary = await llm_query('Summarize this text about turtles in 2 sentences', content)
-setFinal(summary)
-\`\`\`
-`
-
-/** Build the full system prompt (constant) */
-export function getSystemPrompt(): string {
-  return SYSTEM_PROMPT
+  return sections.join('\n')
 }
 
 /** Build the continuation prompt when no code blocks found */
@@ -126,20 +193,8 @@ export async function buildEnvMetadata(
   tabManager: TabManager,
   repl: REPLRuntime
 ): Promise<string> {
-  const allTabs = tabManager.getAllTabs()
+  const tabCount = tabManager.getAllTabs().length
   const activeId = tabManager.getActiveTabId()
-
-  const tabList = allTabs.map((t, i) =>
-    `  [${i}] id:${t.id} | ${t.url} | "${t.title}" | ${t.status}`
-  ).join('\n')
-
-  const sessionInfo = allTabs
-    .filter(t => t.url && !t.url.startsWith('about:'))
-    .map(t => {
-      try { return new URL(t.url).hostname } catch { return '' }
-    })
-    .filter(Boolean)
-    .filter((v, i, a) => a.indexOf(v) === i) // unique
 
   // Get REPL variable metadata
   const envVars = await repl.getEnvMetadata()
@@ -161,16 +216,12 @@ export async function buildEnvMetadata(
     varsSection = `\n## REPL Variables\n${varLines.join('\n')}`
   }
 
+  // Tabs are external variables — only show count + active. Use `tabs` getter to query.
   const lines = [
     `## Browser State`,
-    `Open tabs (${allTabs.length}):`,
-    tabList,
-    `Active: ${activeId || 'none'}`,
+    `${tabCount} tab${tabCount !== 1 ? 's' : ''} open. Active: ${activeId || 'none'}`,
+    `Use \`tabs\` to list all tabs, \`activeTab\` for the focused tab ID.`,
   ]
-
-  if (sessionInfo.length > 0) {
-    lines.push(`Session active on: ${sessionInfo.join(', ')}`)
-  }
 
   if (!varsSection) {
     varsSection = '\n## REPL Variables\n  (none yet — use const/let/var or env.key to store values)'

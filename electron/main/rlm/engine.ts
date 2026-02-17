@@ -251,7 +251,7 @@ export class RLMEngine {
     }
   }
 
-  /** Handle a sub-LLM call from the REPL */
+  /** Handle a sub-LLM call from the REPL — runs a full mini RLM loop */
   private async handleSubCall(prompt: string, data?: unknown): Promise<string> {
     if (this.subCallCount >= (this.config.maxSubCalls || MAX_SUB_CALLS)) {
       return '[SUB-CALL ERROR] Maximum sub-call limit reached.'
@@ -260,33 +260,135 @@ export class RLMEngine {
 
     this.emit(IPC.RLM_SUB_LLM_START, { prompt: prompt.slice(0, 200) })
 
+    const MAX_SUB_ITERATIONS = 10
+
+    // Create a fresh REPL for this sub-call with full access
+    const subRepl = new REPLRuntime(this.tabManager, {
+      onLog: (msg) => this.emit(IPC.RLM_LOG, { message: `[sub-call] ${msg}` }),
+      onSetFinal: (_value) => { /* checked via subRepl.isFinalCalled() */ },
+      onSubCall: (_p, _d) => Promise.resolve('[SUB-CALL ERROR] Nested sub-calls not supported.'),
+      onSubBatch: (_p) => Promise.resolve([{ status: 'rejected', error: 'Nested sub-calls not supported.' }]),
+    })
+
     try {
+      await subRepl.initialize()
+
+      // Inject the data as a variable in the sub-REPL
+      if (data !== undefined) {
+        const serialized = typeof data === 'string' ? data : JSON.stringify(data, null, 0)
+        await subRepl.execute(`var __data = ${JSON.stringify(serialized)}; try { __data = JSON.parse(__data); } catch(e) {}`)
+      }
+
+      // Same system prompt as main agent, just with llm_query/llm_batch excluded
+      const basePrompt = getSystemPrompt({ isSubCall: true })
       const subSystemPrompt = [
-        getSystemPrompt(),
-        '\n## Current Task Context',
-        `User's request: "${this.taskTracker.getUserMessage()}"`,
+        basePrompt,
+        `\n## Sub-Task Context`,
+        `User's original request: "${this.taskTracker.getUserMessage()}"`,
         `Progress so far: ${this.taskTracker.progressSummary()}`,
-        '\n## Your Sub-Task',
+        `\n## Your Task`,
         prompt,
+        data !== undefined ? `\nData has been loaded into the variable \`__data\`. Use it directly.` : '',
       ].join('\n')
 
-      const messages = data
-        ? [{ role: 'user' as const, content: `Data:\n${typeof data === 'string' ? data : JSON.stringify(data, null, 0)}\n\nExecute the sub-task described in your system prompt.` }]
-        : [{ role: 'user' as const, content: 'Execute the sub-task described in your system prompt.' }]
+      const history: Array<{ role: 'user' | 'assistant'; content: string }> = [
+        { role: 'user', content: data !== undefined
+          ? `Execute the sub-task. Data is available as \`__data\`.`
+          : 'Execute the sub-task described in your system prompt.'
+        },
+      ]
 
-      const result = await this.llmClient.complete(
-        subSystemPrompt,
-        messages,
-        this.config.subModel || this.config.primaryModel,
-        this.abortController?.signal
-      )
+      let consecutiveNoCodes = 0
+      let llmErrors = 0
 
-      this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `string (${result.length} chars)` })
-      return result
+      for (let i = 0; i < MAX_SUB_ITERATIONS; i++) {
+        if (this.abortController?.signal.aborted) {
+          return '[SUB-CALL CANCELLED] Task cancelled by user.'
+        }
+
+        // Call LLM — resilient to transient failures, same as main loop
+        let response: string
+        try {
+          response = await this.llmClient.complete(
+            subSystemPrompt,
+            history,
+            this.config.subModel || this.config.primaryModel,
+            this.abortController?.signal
+          )
+          llmErrors = 0
+        } catch (err: any) {
+          llmErrors++
+          if (llmErrors >= 3) {
+            // 3 consecutive LLM failures — genuinely broken, bail
+            this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `LLM failed 3 times: ${err.message}` })
+            return `[SUB-CALL ERROR] LLM failed 3 consecutive times: ${err.message}`
+          }
+          // Feed error into history and retry — same as main loop resilience
+          history.push({ role: 'user', content: `LLM call error: ${err.message}. Retrying...` })
+          continue
+        }
+
+        // Parse code blocks
+        const codeBlocks = extractCodeBlocks(response)
+
+        if (codeBlocks.length === 0) {
+          consecutiveNoCodes++
+          // Same continuation pattern as main loop
+          history.push({ role: 'assistant', content: response })
+          history.push({ role: 'user', content: getContinuationPrompt(i) })
+
+          if (consecutiveNoCodes >= MAX_NO_CODE_CONTINUATIONS) {
+            // Exhausted nudges — return the raw text as best-effort answer
+            this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `string (${response.length} chars) — no code after ${MAX_NO_CODE_CONTINUATIONS} attempts, returning raw text` })
+            return response
+          }
+          continue
+        }
+
+        consecutiveNoCodes = 0
+
+        // Execute ALL code blocks sequentially — same as main loop
+        const blockResults: Array<{ code: string; result: unknown }> = []
+        for (const code of codeBlocks) {
+          const result = await subRepl.execute(code)
+          blockResults.push({ code, result })
+
+          if (subRepl.isFinalCalled()) break
+          if (this.abortController?.signal.aborted) break
+        }
+
+        if (subRepl.isFinalCalled()) {
+          const finalVal = subRepl.getFinalValue()
+          const result = typeof finalVal === 'string' ? finalVal : JSON.stringify(finalVal)
+          this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `string (${result.length} chars)` })
+          return result
+        }
+
+        // No setFinal — build per-block metadata and feed back, same as main loop
+        const blockMeta = blockResults.map((b, idx) => {
+          const prefix = blockResults.length > 1 ? `Block ${idx + 1}: ` : ''
+          return `${prefix}${this.summarize(b.code, b.result)}`
+        }).join('\n\n')
+
+        history.push({ role: 'assistant', content: response })
+        history.push({ role: 'user', content: `Code executed.\n${blockMeta}\n\nContinue — call setFinal(value) when you have the result.` })
+      }
+
+      // Hit iteration cap — try to salvage something useful
+      const envMeta = await subRepl.getEnvMetadata()
+      const envKeys = Object.keys(envMeta)
+      if (envKeys.length > 0) {
+        this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `hit ${MAX_SUB_ITERATIONS} iterations, returning env state (${envKeys.length} vars)` })
+        return JSON.stringify(envMeta)
+      }
+      this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `hit ${MAX_SUB_ITERATIONS} iterations without setFinal` })
+      return `[SUB-CALL] Reached ${MAX_SUB_ITERATIONS} iterations without calling setFinal(). No result produced.`
     } catch (err: any) {
       const errMsg = `[SUB-CALL ERROR] ${err.message || String(err)}`
       this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: errMsg })
       return errMsg
+    } finally {
+      subRepl.dispose()
     }
   }
 
