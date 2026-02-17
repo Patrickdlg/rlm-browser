@@ -16,6 +16,7 @@ export class TabManager {
   private activeTabId: string | null = null
   private chromeView: WebContentsView | null = null
   private differ = new TabDiffer()
+  onTabCountChange: (() => void) | null = null
 
   constructor(
     window: BaseWindow,
@@ -114,6 +115,7 @@ export class TabManager {
     }
 
     this.notifyChrome(IPC.TAB_UPDATED, state.toInfo())
+    this.onTabCountChange?.()
     return id
   }
 
@@ -138,6 +140,8 @@ export class TabManager {
         this.notifyChrome(IPC.TAB_ACTIVE_CHANGED, null)
       }
     }
+
+    this.onTabCountChange?.()
   }
 
   switchTab(tabId: string): void {
