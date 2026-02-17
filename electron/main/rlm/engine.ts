@@ -299,8 +299,13 @@ export class RLMEngine {
     const preExistingTabIds = new Set(this.tabManager.getAllTabs().map(t => t.id))
 
     // Create a fresh REPL for this sub-call with full access
+    // Collect log messages so we can feed them back into the sub-agent's conversation
+    const subLogs: string[] = []
     const subRepl = new REPLRuntime(this.tabManager, {
-      onLog: (msg) => this.emit(IPC.RLM_LOG, { message: `[sub-call] ${msg}` }),
+      onLog: (msg) => {
+        this.emit(IPC.RLM_LOG, { message: `[sub-call] ${msg}` })
+        subLogs.push(msg)
+      },
       onSetFinal: (_value) => { /* checked via subRepl.isFinalCalled() */ },
       onSubCall: (_p, _d) => Promise.resolve('[SUB-CALL ERROR] Nested sub-calls not supported.'),
       onSubBatch: (_p) => Promise.resolve([{ status: 'rejected', error: 'Nested sub-calls not supported.' }]),
@@ -405,10 +410,19 @@ export class RLMEngine {
           return `${prefix}${this.summarize(b.code, b.result)}`
         }).join('\n\n')
 
+        // Include log output so the sub-agent can see what it logged
+        let logSection = ''
+        if (subLogs.length > 0) {
+          let logText = subLogs.join('\n')
+          if (logText.length > 8000) logText = logText.slice(0, 8000) + '\n... (truncated)'
+          logSection = `\nLog output:\n${logText}`
+          subLogs.length = 0
+        }
+
         history.push({ role: 'assistant', content: response })
         const continueMsg = data !== undefined
-          ? `Code executed.\n${blockMeta}\n\n⚠️ You have NOT called setFinal() yet. The data is in \`__data\`. Process it and call setFinal(value) NOW.`
-          : `Code executed.\n${blockMeta}\n\nContinue — call setFinal(value) when you have the result.`
+          ? `Code executed.\n${blockMeta}${logSection}\n\n⚠️ You have NOT called setFinal() yet. The data is in \`__data\`. Process it and call setFinal(value) NOW.`
+          : `Code executed.\n${blockMeta}${logSection}\n\nContinue — call setFinal(value) when you have the result.`
         history.push({ role: 'user', content: continueMsg })
       }
 
