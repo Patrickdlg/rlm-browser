@@ -36,9 +36,9 @@ export class REPLRuntime {
       return new ivm.ExternalCopy(capResult(result)).copyInto()
     }))
 
-    // openTab(url?) -> tabId
+    // openTab(url?) -> tabId — opens in background so it doesn't steal focus from Command Center
     await jail.set('_openTab', new ivm.Reference(async (url?: string) => {
-      return this.tabManager.openTab(url || undefined)
+      return this.tabManager.openTab(url || undefined, { background: true })
     }))
 
     // closeTab(tabId)

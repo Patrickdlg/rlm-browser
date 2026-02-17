@@ -35,7 +35,7 @@ export class TabManager {
     }
   }
 
-  openTab(url?: string): string {
+  openTab(url?: string, options?: { background?: boolean }): string {
     const id = nextTabId()
     const state = new TabState(id)
 
@@ -102,8 +102,10 @@ export class TabManager {
       return { action: 'deny' }
     })
 
-    // Make this the active tab
-    this.switchTab(id)
+    // Make this the active tab (unless opened in background)
+    if (!options?.background) {
+      this.switchTab(id)
+    }
 
     // Navigate if URL provided
     if (url && url !== 'about:blank') {
