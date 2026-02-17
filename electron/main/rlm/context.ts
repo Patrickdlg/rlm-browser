@@ -36,6 +36,7 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
     `- \`execInTab\` results are capped at 100K chars. Use specific selectors to narrow results.`,
     `- If a CSS selector returns empty/null, don't keep retrying the same selector. Fall back to \`getText(tabId)\` to get the full page text, or use \`execInTab\` with string searches (e.g. \`document.body.innerText.match(/pattern/)\`) to locate content. Sites change their DOM structure frequently.`,
     `- Google search results have unpredictable DOM structure. Do NOT use \`querySelector\`/\`querySelectorAll\` with selectors like \`div.g\` — they will fail. Use \`getText(tabId)\` to read Google's search result snippets as plain text. If using \`getLinks(tabId)\`, note that the first ~10 links are Google's own navigation (Accessibility help, Sign in, Images, etc.) — filter to links whose href does NOT contain \`google.com\`.`,
+    `- For factual questions involving superlatives (highest, biggest, most recent, etc.), Wikipedia's "List of..." pages are frequently updated and reliable. Prefer them over Google's AI Overview, which may be outdated.`,
     ...(!isSubCall ? [`- \`llm_query()\` may return "[SUB-CALL ERROR] ..." on failure — always check the result.`] : []),
     ...(isSubCall ? [
       `- \`llm_query\` and \`llm_batch\` are NOT available in sub-call context. You have full browser access and can reason about data directly — read tabs, extract content, and synthesize answers. Call \`setFinal()\` with your answer when done.`,
