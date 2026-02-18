@@ -1,6 +1,27 @@
 import ivm from 'isolated-vm'
+import { parseHTML as linkedomParseHTML } from 'linkedom'
 import type { TabManager } from '../tabs/TabManager'
 import { capResult, SLEEP_CAP_MS, EXEC_TIMEOUT_MS, ISOLATE_MEMORY_LIMIT_MB, LOG_MAX_CHARS } from './caps'
+
+/** Serialize a DOM element to a plain object for transfer into the isolate */
+function serializeElement(el: any): object {
+  return {
+    tag: (el.tagName || '').toLowerCase(),
+    id: el.id || '',
+    className: el.className || '',
+    text: (el.textContent || '').trim().slice(0, 500),
+    attrs: Object.fromEntries([...(el.attributes || [])].map((a: any) => [a.name, a.value])),
+  }
+}
+
+/** Serialize with innerHTML and childCount for single-element queries */
+function serializeElementFull(el: any): object {
+  return {
+    ...serializeElement(el),
+    innerHTML: (el.innerHTML || '').slice(0, 2000),
+    childCount: el.children ? el.children.length : 0,
+  }
+}
 
 export interface REPLCallbacks {
   onLog: (message: string) => void
@@ -16,6 +37,8 @@ export class REPLRuntime {
   private callbacks: REPLCallbacks
   private finalValue: unknown = undefined
   private finalCalled = false
+  private docMap: Map<string, any> = new Map()
+  private docCounter = 0
 
   constructor(tabManager: TabManager, callbacks: REPLCallbacks) {
     this.tabManager = tabManager
@@ -104,6 +127,57 @@ export class REPLRuntime {
       } catch (err: any) {
         return new ivm.ExternalCopy([{ status: 'rejected', error: err.message || String(err) }]).copyInto()
       }
+    }))
+
+    // --- Host-side DOM parsing (linkedom) ---
+
+    // parseHTML(html) → docHandle
+    await jail.set('_parseHTML', new ivm.Reference((html: string) => {
+      const handle = `doc_${this.docCounter++}`
+      const { document } = linkedomParseHTML(String(html))
+      this.docMap.set(handle, document)
+      return handle
+    }))
+
+    // parsePage(tabId, selector?) → docHandle
+    await jail.set('_parsePage', new ivm.Reference(async (tabId: string, selector?: string) => {
+      const sel = selector ? JSON.stringify(selector) : 'null'
+      const code = `(() => { const el = ${sel} ? document.querySelector(${sel}) : document.documentElement; return el ? el.outerHTML : ''; })()`
+      const html = await this.tabManager.exec(tabId, code)
+      const handle = `doc_${this.docCounter++}`
+      const { document } = linkedomParseHTML(String(html))
+      this.docMap.set(handle, document)
+      return handle
+    }))
+
+    // domQueryAll(handle, selector) → serialized elements
+    await jail.set('_domQueryAll', new ivm.Reference((handle: string, selector: string) => {
+      const doc = this.docMap.get(handle)
+      if (!doc) throw new Error(`Document not found: ${handle}`)
+      const els = [...doc.querySelectorAll(selector)]
+      return new ivm.ExternalCopy(els.map(serializeElement)).copyInto()
+    }))
+
+    // domQueryOne(handle, selector) → serialized element or null
+    await jail.set('_domQueryOne', new ivm.Reference((handle: string, selector: string) => {
+      const doc = this.docMap.get(handle)
+      if (!doc) throw new Error(`Document not found: ${handle}`)
+      const el = doc.querySelector(selector)
+      if (!el) return null
+      return new ivm.ExternalCopy(serializeElementFull(el)).copyInto()
+    }))
+
+    // domText(handle, selector) → string[]
+    await jail.set('_domText', new ivm.Reference((handle: string, selector: string) => {
+      const doc = this.docMap.get(handle)
+      if (!doc) throw new Error(`Document not found: ${handle}`)
+      const els = [...doc.querySelectorAll(selector)]
+      return new ivm.ExternalCopy(els.map((el: any) => (el.textContent || '').trim().slice(0, 500))).copyInto()
+    }))
+
+    // freeDoc(handle)
+    await jail.set('_freeDoc', new ivm.Reference((handle: string) => {
+      this.docMap.delete(handle)
     }))
 
     // --- Bootstrap the REPL environment inside the isolate ---
@@ -338,6 +412,26 @@ export class REPLRuntime {
         return _llm_batch.apply(undefined, [normalized], { arguments: { copy: true }, result: { promise: true, copy: true } });
       }
 
+      // Host-side DOM parsing (linkedom)
+      async function parseHTML(html) {
+        return _parseHTML.apply(undefined, [html], { arguments: { copy: true }, result: { copy: true } });
+      }
+      async function parsePage(tabId, selector) {
+        return _parsePage.apply(undefined, [tabId, selector || ''], { arguments: { copy: true }, result: { promise: true, copy: true } });
+      }
+      async function domQueryAll(doc, selector) {
+        return _domQueryAll.apply(undefined, [doc, selector], { arguments: { copy: true }, result: { copy: true } });
+      }
+      async function domQueryOne(doc, selector) {
+        return _domQueryOne.apply(undefined, [doc, selector], { arguments: { copy: true }, result: { copy: true } });
+      }
+      async function domText(doc, selector) {
+        return _domText.apply(undefined, [doc, selector], { arguments: { copy: true }, result: { copy: true } });
+      }
+      function freeDoc(doc) {
+        _freeDoc.applySync(undefined, [doc], { arguments: { copy: true } });
+      }
+
       // Stubs for deferred APIs
       async function getAccessibilityTree() { throw new Error('getAccessibilityTree not yet implemented'); }
       async function screenshot() { throw new Error('screenshot not yet implemented'); }
@@ -439,6 +533,7 @@ export class REPLRuntime {
             'env', 'execInTab', 'openTab', 'closeTab', 'navigate', 'switchTab',
             'waitForLoad', 'getText', 'getDOM', 'getLinks', 'getSearchResults', 'getWikiTables', 'getInputs',
             'querySelector', 'querySelectorAll', 'click', 'type', 'scroll',
+            'parseHTML', 'parsePage', 'domQueryAll', 'domQueryOne', 'domText', 'freeDoc',
             'log', 'sleep', 'setFinal', 'llm_query', 'llm_batch',
             'getAccessibilityTree', 'screenshot', 'getCookies', 'setCookie',
             'getLocalStorage', 'getSessionStorage', 'clearStorage',
@@ -448,6 +543,7 @@ export class REPLRuntime {
             '_execInTab', '_openTab', '_closeTab', '_navigate', '_switchTab',
             '_waitForLoad', '_getTabs', '_getActiveTab', '_log', '_setFinal',
             '_llm_query', '_llm_batch',
+            '_parseHTML', '_parsePage', '_domQueryAll', '_domQueryOne', '_domText', '_freeDoc',
             'globalThis', 'undefined', 'NaN', 'Infinity',
           ]);
 
@@ -504,6 +600,8 @@ export class REPLRuntime {
 
   /** Destroy the isolate and free resources */
   dispose(): void {
+    this.docMap.clear()
+    this.docCounter = 0
     if (this.isolate) {
       try {
         this.isolate.dispose()
