@@ -230,6 +230,42 @@ export class TabManager {
     return entry.view.webContents.executeJavaScript(code)
   }
 
+  /** Wait for a CSS selector to appear in a tab's DOM (polls every 200ms) */
+  async waitForSelector(tabId: string, selector: string, timeout: number = 30000): Promise<void> {
+    const entry = this.tabs.get(tabId)
+    if (!entry) throw new Error(`Tab ${tabId} not found`)
+    const wc = entry.view.webContents
+    const escaped = JSON.stringify(selector)
+
+    // Fast path — element already exists
+    const exists = await wc.executeJavaScript(`!!document.querySelector(${escaped})`)
+    if (exists) return
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup()
+        reject(new Error(`waitForSelector(${escaped}) timed out after ${timeout}ms for tab ${tabId}`))
+      }, timeout)
+
+      const poll = async () => {
+        try {
+          if (wc.isDestroyed()) {
+            cleanup()
+            reject(new Error(`Tab ${tabId} was closed while waiting for selector`))
+            return
+          }
+          const found = await wc.executeJavaScript(`!!document.querySelector(${escaped})`)
+          if (found) { cleanup(); resolve() }
+        } catch {
+          // keep polling until timeout
+        }
+      }
+
+      const intervalId = setInterval(poll, 200)
+      const cleanup = () => { clearTimeout(timer); clearInterval(intervalId) }
+    })
+  }
+
   /** Wait for a tab to finish loading */
   async waitForLoad(tabId: string, timeout: number = 30000): Promise<void> {
     const entry = this.tabs.get(tabId)

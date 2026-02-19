@@ -86,9 +86,13 @@ export class RLMEngine {
     const maxIter = this.config.maxIterations || MAX_ITERATIONS
     this.taskTracker.setTask(message, maxIter)
 
-    // Initialize fresh REPL
+    // Initialize fresh REPL — collect logs so the LLM can see its own output
+    const iterationLogs: string[] = []
     this.repl = new REPLRuntime(this.tabManager, {
-      onLog: (msg) => this.emit(IPC.RLM_LOG, { message: msg }),
+      onLog: (msg) => {
+        this.emit(IPC.RLM_LOG, { message: msg })
+        iterationLogs.push(msg)
+      },
       onSetFinal: (_value) => { /* handled via repl.isFinalCalled() */ },
       onSubCall: (prompt, data) => this.handleSubCall(prompt, data),
       onSubBatch: (prompts) => this.handleSubBatch(prompts),
@@ -233,11 +237,19 @@ export class RLMEngine {
           this.emit(IPC.RLM_ENV_UPDATE, { metadata: JSON.stringify(envMeta) })
         }
 
-        // Build iteration record
+        // Build iteration record — include log output so the LLM can see what it logged
         const fullMeta = blocks.map((b, i) => {
           const header = blocks.length > 1 ? `Block ${i + 1}:\n` : ''
           return `${header}${b.metadata}`
         }).join('\n\n')
+
+        let logSection = ''
+        if (iterationLogs.length > 0) {
+          let logText = iterationLogs.join('\n')
+          if (logText.length > 8000) logText = logText.slice(0, 8000) + '\n... (truncated)'
+          logSection = `\nLog output:\n${logText}`
+          iterationLogs.length = 0
+        }
 
         const oneLiner = this.summarizeIntent(blocks)
 
@@ -247,7 +259,7 @@ export class RLMEngine {
           timestamp: iterStart,
           durationMs: Date.now() - iterStart,
           oneLinerSummary: oneLiner,
-          fullMetadata: `## Iteration ${iteration + 1} (${blocks.length} code block${blocks.length > 1 ? 's' : ''})\n${fullMeta}`,
+          fullMetadata: `## Iteration ${iteration + 1} (${blocks.length} code block${blocks.length > 1 ? 's' : ''})\n${fullMeta}${logSection}`,
           pageChanges,
         }
         this.taskTracker.addIteration(record)

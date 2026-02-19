@@ -84,6 +84,17 @@ export class REPLRuntime {
       await this.tabManager.waitForLoad(tabId, timeout)
     }))
 
+    // waitForSelector(tabId, selector, timeout?)
+    await jail.set('_waitForSelector', new ivm.Reference(async (tabId: string, selector: string, timeout?: number) => {
+      await this.tabManager.waitForSelector(tabId, selector, timeout)
+    }))
+
+    // sleep(ms) — host-side, since setTimeout is not available in isolated-vm
+    await jail.set('_sleep', new ivm.Reference(async (ms: number) => {
+      const capped = Math.min(ms, SLEEP_CAP_MS)
+      return new Promise<void>(resolve => setTimeout(resolve, capped))
+    }))
+
     // getTabs() -> TabInfo[]
     await jail.set('_getTabs', new ivm.Reference(() => {
       return new ivm.ExternalCopy(this.tabManager.getAllTabs()).copyInto()
@@ -203,6 +214,9 @@ export class REPLRuntime {
       }
       async function waitForLoad(tabId, timeout) {
         return _waitForLoad.apply(undefined, [tabId, timeout || 30000], { arguments: { copy: true }, result: { promise: true } });
+      }
+      async function waitForSelector(tabId, selector, timeout) {
+        return _waitForSelector.apply(undefined, [tabId, selector, timeout || 30000], { arguments: { copy: true }, result: { promise: true } });
       }
 
       // Tab getters (evaluated fresh each call via Reference)
@@ -383,8 +397,7 @@ export class REPLRuntime {
       }
 
       async function sleep(ms) {
-        const capped = Math.min(ms, ${SLEEP_CAP_MS});
-        return new Promise(resolve => setTimeout(resolve, capped));
+        return _sleep.apply(undefined, [ms], { arguments: { copy: true }, result: { promise: true } });
       }
 
       function setFinal(value) {
@@ -531,7 +544,7 @@ export class REPLRuntime {
         (() => {
           const BUILTIN_NAMES = new Set([
             'env', 'execInTab', 'openTab', 'closeTab', 'navigate', 'switchTab',
-            'waitForLoad', 'getText', 'getDOM', 'getLinks', 'getSearchResults', 'getWikiTables', 'getInputs',
+            'waitForLoad', 'waitForSelector', 'getText', 'getDOM', 'getLinks', 'getSearchResults', 'getWikiTables', 'getInputs',
             'querySelector', 'querySelectorAll', 'click', 'type', 'scroll',
             'parseHTML', 'parsePage', 'domQueryAll', 'domQueryOne', 'domText', 'freeDoc',
             'log', 'sleep', 'setFinal', 'llm_query', 'llm_batch',
@@ -541,7 +554,7 @@ export class REPLRuntime {
             'getConsoleLog', 'getErrors', 'fill', 'keyPress', 'hover', 'select',
             'store', 'retrieve',
             '_execInTab', '_openTab', '_closeTab', '_navigate', '_switchTab',
-            '_waitForLoad', '_getTabs', '_getActiveTab', '_log', '_setFinal',
+            '_waitForLoad', '_waitForSelector', '_sleep', '_getTabs', '_getActiveTab', '_log', '_setFinal',
             '_llm_query', '_llm_batch',
             '_parseHTML', '_parsePage', '_domQueryAll', '_domQueryOne', '_domText', '_freeDoc',
             'globalThis', 'undefined', 'NaN', 'Infinity',
