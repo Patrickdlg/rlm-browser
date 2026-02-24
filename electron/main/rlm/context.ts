@@ -36,6 +36,7 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
     `- Many sites (LinkedIn, Twitter/X, Facebook, etc.) are SPAs that render content AFTER the page load event. \`waitForLoad()\` only waits for the initial load — use \`waitForSelector(tabId, selector)\` to wait for specific content to appear. If \`getText()\` returns very little text after \`waitForLoad()\`, the page likely hasn't finished rendering its SPA content yet.`,
     `- When searching for information about people, check Google results for LinkedIn profile URLs. LinkedIn profiles are reliable, structured sources. Open the LinkedIn URL with \`openTab()\`, then use \`waitForSelector()\` to wait for profile sections to render before extracting content.`,
     `- \`execInTab\` results are capped at 100K chars. Use specific selectors to narrow results.`,
+    `- Many modern sites use \`contenteditable\` divs instead of \`<textarea>\` for text input (e.g. LinkedIn messaging, Gmail compose, Slack). \`type()\` handles both — just find the right selector. Look for \`[contenteditable="true"]\` or \`[role="textbox"]\` if \`textarea\`/\`input\` searches fail.`,
     `- If a CSS selector returns empty/null, don't keep retrying the same selector. Fall back to \`getText(tabId)\` to get the full page text, or use \`execInTab\` with string searches (e.g. \`document.body.innerText.match(/pattern/)\`) to locate content. Sites change their DOM structure frequently.`,
     `- For complex DOM extraction, use \`parsePage(tabId)\` to create a queryable document, then \`domQueryAll(doc, selector)\` or \`domText(doc, selector)\` to extract data. This is faster than repeated \`querySelector/querySelectorAll\` calls since the DOM is parsed once and queried locally. Call \`freeDoc(doc)\` when done.`,
     `- For Google search results, use \`getSearchResults(tabId)\` — it returns clean \`[{title, url, snippet}]\` for organic results only. Do NOT use \`getText()\` or \`getLinks()\` on Google — they include tons of navigation noise.`,
@@ -97,7 +98,7 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
     `### Browser Actions`,
     '```',
     `click(tabId, selector)              // Click an element`,
-    `type(tabId, selector, text)         // Type into input field`,
+    `type(tabId, selector, text)         // Type into input/textarea OR contenteditable div`,
     `scroll(tabId, direction, amount?)   // Scroll page ('up' or 'down', default 500px)`,
     '```',
   ]

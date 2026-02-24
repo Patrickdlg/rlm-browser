@@ -383,7 +383,11 @@ export class REPLRuntime {
             const el = document.querySelector(\${JSON.stringify(selector)});
             if (!el) throw new Error('Element not found: ' + \${JSON.stringify(selector)});
             el.focus();
-            el.value = \${JSON.stringify(text)};
+            if (el.contentEditable === 'true' || el.isContentEditable) {
+              el.innerText = \${JSON.stringify(text)};
+            } else {
+              el.value = \${JSON.stringify(text)};
+            }
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
