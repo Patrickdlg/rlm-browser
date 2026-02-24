@@ -1,5 +1,5 @@
 import { WebContentsView, app } from 'electron'
-import { writeFileSync, mkdirSync, appendFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync, appendFileSync, writeFile, mkdir } from 'node:fs'
 import { join } from 'node:path'
 import type { TabManager } from '../tabs/TabManager'
 import type { LLMConfig, IterationRecord, BlockResult, TaskState, TabChange } from '../../../src/shared/types'
@@ -23,6 +23,8 @@ export class RLMEngine {
   private status: 'idle' | 'running' | 'complete' | 'cancelled' | 'error' = 'idle'
   private pendingConfirmation: ((approved: boolean) => void) | null = null
   private traceFile: string | null = null
+  private conversationBuffer: Array<{system: string, messages: Array<{role: string, content: string}>, completion: string}> = []
+  private subConversationBuffers: Map<number, Array<{system: string, messages: Array<{role: string, content: string}>, completion: string}>> = new Map()
 
   constructor(tabManager: TabManager, commandCenterView: WebContentsView, config: LLMConfig) {
     this.tabManager = tabManager
@@ -70,6 +72,55 @@ export class RLMEngine {
     }
   }
 
+  /** Save conversation buffers to disk for SFT training — fire-and-forget, never blocks */
+  private saveConversations(taskGoal: string): void {
+    // Snapshot buffers so the finally-block cleanup can't race with writes
+    const mainBuffer = this.conversationBuffer
+    const subBuffers = this.subConversationBuffers
+    const config = this.config
+
+    const writeAsync = (path: string, data: string) =>
+      new Promise<void>((resolve, reject) => writeFile(path, data, err => err ? reject(err) : resolve()))
+    const mkdirAsync = (path: string) =>
+      new Promise<void>((resolve, reject) => mkdir(path, { recursive: true }, err => err ? reject(err) : resolve()))
+
+    const ts = new Date().toISOString().replace(/[:.]/g, '-')
+    const slug = taskGoal.slice(0, 40).replace(/[^a-zA-Z0-9]+/g, '-').replace(/-+$/, '')
+    const convDir = join(app.getPath('userData'), 'traces', 'conversations', `${ts}_${slug}`)
+
+    mkdirAsync(convDir).then(async () => {
+      // meta.json
+      const meta = {
+        taskGoal,
+        provider: config.provider,
+        primaryModel: config.primaryModel,
+        subModel: config.subModel,
+        timestamp: Date.now(),
+        iterations: mainBuffer.length,
+        subAgentCount: subBuffers.size,
+      }
+      await writeAsync(join(convDir, 'meta.json'), JSON.stringify(meta, null, 2))
+
+      // main.jsonl — one line per iteration
+      const mainLines = mainBuffer.map(entry => JSON.stringify(entry)).join('\n')
+      await writeAsync(join(convDir, 'main.jsonl'), mainLines + '\n')
+
+      // sub-agents/*.jsonl
+      if (subBuffers.size > 0) {
+        const subDir = join(convDir, 'sub-agents')
+        await mkdirAsync(subDir)
+        for (const [idx, entries] of subBuffers) {
+          const lines = entries.map(entry => JSON.stringify(entry)).join('\n')
+          await writeAsync(join(subDir, `sub_${idx}.jsonl`), lines + '\n')
+        }
+      }
+
+      console.log(`[RLM] Conversations saved: ${convDir}`)
+    }).catch(err => {
+      console.error('[RLM] Failed to save conversations:', err)
+    })
+  }
+
   /** Run a task — the main Algorithm 1 loop */
   async runTask(message: string): Promise<void> {
     if (this.status === 'running') {
@@ -82,6 +133,8 @@ export class RLMEngine {
     this.abortController = new AbortController()
     const signal = this.abortController.signal
     this.initTraceFile(message)
+    this.conversationBuffer = []
+    this.subConversationBuffers = new Map()
 
     const maxIter = this.config.maxIterations || MAX_ITERATIONS
     this.taskTracker.setTask(message, maxIter)
@@ -172,6 +225,13 @@ export class RLMEngine {
           this.emit(IPC.RLM_COMPLETE, { final: 'Task cancelled by user.' })
           return
         }
+
+        // Capture conversation for SFT training
+        this.conversationBuffer.push({
+          system: getSystemPrompt(),
+          messages: messages.map(m => ({ ...m })),
+          completion: fullResponse,
+        })
 
         // Parse code blocks
         const codeBlocks = extractCodeBlocks(fullResponse)
@@ -275,6 +335,7 @@ export class RLMEngine {
         if (finalCalled) {
           this.status = 'complete'
           const finalVal = this.repl.getFinalValue()
+          this.saveConversations(message)
           this.emit(IPC.RLM_COMPLETE, { final: finalVal })
           return
         }
@@ -293,6 +354,8 @@ export class RLMEngine {
       }
       this.abortController = null
       this.traceFile = null
+      this.conversationBuffer = []
+      this.subConversationBuffers = new Map()
     }
   }
 
@@ -369,6 +432,16 @@ export class RLMEngine {
             this.abortController?.signal
           )
           llmErrors = 0
+
+          // Capture sub-call conversation for SFT training
+          if (!this.subConversationBuffers.has(subCallIndex)) {
+            this.subConversationBuffers.set(subCallIndex, [])
+          }
+          this.subConversationBuffers.get(subCallIndex)!.push({
+            system: subSystemPrompt,
+            messages: history.map(m => ({ ...m })),
+            completion: response,
+          })
         } catch (err: any) {
           llmErrors++
           if (llmErrors >= 3) {
