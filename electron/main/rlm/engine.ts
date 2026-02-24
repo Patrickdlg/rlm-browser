@@ -24,8 +24,7 @@ export class RLMEngine {
   private status: 'idle' | 'running' | 'complete' | 'cancelled' | 'error' = 'idle'
   private pendingConfirmation: ((approved: boolean) => void) | null = null
   private traceFile: string | null = null
-  private conversationBuffer: Array<{messages: Array<{role: string, content: string}>, completion: string}> = []
-  private subConversationBuffers: Map<number, Array<{messages: Array<{role: string, content: string}>, completion: string}>> = new Map()
+  private subConversations: Map<number, Array<{role: string, content: string}>> = new Map()
 
   constructor(tabManager: TabManager, commandCenterView: WebContentsView, config: LLMConfig) {
     this.tabManager = tabManager
@@ -74,10 +73,9 @@ export class RLMEngine {
   }
 
   /** Save conversation buffers to disk for SFT training — fire-and-forget, never blocks */
-  private saveConversations(taskGoal: string): void {
-    // Snapshot buffers so the finally-block cleanup can't race with writes
-    const mainBuffer = this.conversationBuffer
-    const subBuffers = this.subConversationBuffers
+  private saveConversations(taskGoal: string, conversationHistory: Array<{role: string, content: string}>): void {
+    // Snapshot so the finally-block cleanup can't race with writes
+    const subConvos = new Map(this.subConversations)
     const config = this.config
 
     const writeAsync = (path: string, data: string) =>
@@ -89,7 +87,6 @@ export class RLMEngine {
     const slug = taskGoal.slice(0, 40).replace(/[^a-zA-Z0-9]+/g, '-').replace(/-+$/, '')
     const convDir = join(app.getPath('userData'), 'traces', 'conversations', `${ts}_${slug}`)
 
-    // Capture system prompts once
     const mainSystemPrompt = getSystemPrompt()
     const subSystemPrompt = getSystemPrompt({ isSubCall: true })
     const promptHash = createHash('sha256').update(mainSystemPrompt).digest('hex').slice(0, 12)
@@ -102,29 +99,27 @@ export class RLMEngine {
         primaryModel: config.primaryModel,
         subModel: config.subModel,
         timestamp: Date.now(),
-        iterations: mainBuffer.length,
-        subAgentCount: subBuffers.size,
+        iterations: conversationHistory.filter(m => m.role === 'assistant').length,
+        subAgentCount: subConvos.size,
         systemPromptHash: promptHash,
       }
       await writeAsync(join(convDir, 'meta.json'), JSON.stringify(meta, null, 2))
 
-      // System prompts — saved once per conversation, not per iteration
+      // System prompts
       await writeAsync(join(convDir, 'system.txt'), mainSystemPrompt)
-      if (subBuffers.size > 0) {
+      if (subConvos.size > 0) {
         await writeAsync(join(convDir, 'sub-system.txt'), subSystemPrompt)
       }
 
-      // main.jsonl — one line per iteration, just {messages, completion}
-      const mainLines = mainBuffer.map(entry => JSON.stringify(entry)).join('\n')
-      await writeAsync(join(convDir, 'main.jsonl'), mainLines + '\n')
+      // conversation.json — full turns array, windowed into training examples at training time
+      await writeAsync(join(convDir, 'conversation.json'), JSON.stringify(conversationHistory))
 
-      // sub-agents/*.jsonl
-      if (subBuffers.size > 0) {
+      // sub-agents/*.json
+      if (subConvos.size > 0) {
         const subDir = join(convDir, 'sub-agents')
         await mkdirAsync(subDir)
-        for (const [idx, entries] of subBuffers) {
-          const lines = entries.map(entry => JSON.stringify(entry)).join('\n')
-          await writeAsync(join(subDir, `sub_${idx}.jsonl`), lines + '\n')
+        for (const [idx, turns] of subConvos) {
+          await writeAsync(join(subDir, `sub_${idx}.json`), JSON.stringify(turns))
         }
       }
 
@@ -146,8 +141,7 @@ export class RLMEngine {
     this.abortController = new AbortController()
     const signal = this.abortController.signal
     this.initTraceFile(message)
-    this.conversationBuffer = []
-    this.subConversationBuffers = new Map()
+    this.subConversations = new Map()
 
     const maxIter = this.config.maxIterations || MAX_ITERATIONS
     this.taskTracker.setTask(message, maxIter)
@@ -238,12 +232,6 @@ export class RLMEngine {
           this.emit(IPC.RLM_COMPLETE, { final: 'Task cancelled by user.' })
           return
         }
-
-        // Capture conversation for SFT training
-        this.conversationBuffer.push({
-          messages: messages.map(m => ({ ...m })),
-          completion: fullResponse,
-        })
 
         // Parse code blocks
         const codeBlocks = extractCodeBlocks(fullResponse)
@@ -347,7 +335,7 @@ export class RLMEngine {
         if (finalCalled) {
           this.status = 'complete'
           const finalVal = this.repl.getFinalValue()
-          this.saveConversations(message)
+          this.saveConversations(message, conversationHistory)
           this.emit(IPC.RLM_COMPLETE, { final: finalVal })
           return
         }
@@ -366,8 +354,7 @@ export class RLMEngine {
       }
       this.abortController = null
       this.traceFile = null
-      this.conversationBuffer = []
-      this.subConversationBuffers = new Map()
+      this.subConversations = new Map()
     }
   }
 
@@ -445,14 +432,6 @@ export class RLMEngine {
           )
           llmErrors = 0
 
-          // Capture sub-call conversation for SFT training
-          if (!this.subConversationBuffers.has(subCallIndex)) {
-            this.subConversationBuffers.set(subCallIndex, [])
-          }
-          this.subConversationBuffers.get(subCallIndex)!.push({
-            messages: history.map(m => ({ ...m })),
-            completion: response,
-          })
         } catch (err: any) {
           llmErrors++
           if (llmErrors >= 3) {
@@ -497,6 +476,8 @@ export class RLMEngine {
         if (subRepl.isFinalCalled()) {
           const finalVal = subRepl.getFinalValue()
           const result = typeof finalVal === 'string' ? finalVal : JSON.stringify(finalVal)
+          // Save sub-agent conversation (successful runs only)
+          this.subConversations.set(subCallIndex, [...history, { role: 'assistant', content: response }])
           this.emit(IPC.RLM_SUB_LLM_COMPLETE, { resultMeta: `string (${result.length} chars)`, subCallIndex })
           return result
         }
