@@ -24,7 +24,7 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
     `- Never request large data dumps. Use targeted selectors and queries.`,
     `- You can store variables directly (e.g. \`const results = []\`) — they persist across iterations. You can also use the \`env\` object (e.g. \`env.emails = [...]\`).`,
     ...(!isSubCall ? [
-      `- When you have page content to analyze, summarize, or extract information from, use \`llm_query(prompt, content)\` — do NOT manually slice substrings, log previews, or do rigid text extraction yourself. Sub-agents can reason about entire pages. Get the content with \`getText()\`, pass it to \`llm_query()\`, and use the result.`,
+      `- When you have page content to analyze, summarize, or extract information from, use \`llm_query(prompt, content)\` — pass the full content, not a slice. Do NOT use substring previews as your extraction strategy (logging a slice, reading it in metadata, then summarizing in code comments). A brief \`log(content.length)\` or checking if content is empty is fine — but if you need to understand page content, pass it to \`llm_query()\`.`,
       `- \`navigate(tabId, url)\` DESTROYS the current page in that tab and replaces it — you lose all content. To view multiple sites, use \`openTab(url)\` for each one so previous pages remain accessible.`,
       `- \`llm_batch()\` runs sub-agents concurrently — they may create and clean up their own tabs. Check \`tabs\` after batch calls if needed.`,
     ] : []),
@@ -55,7 +55,7 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
     `- When you have enough information to answer, call setFinal() IMMEDIATELY. Do not do extra iterations. If a sub-call returned a useful answer, deliver it — don't redo the work.`,
     `- Before calling setFinal(), make sure your answer is coherent, deduplicated, and directly addresses the user's question. Do not return raw scraped text or lists with duplicate entries.`,
     ...(!isSubCall ? [
-      `- Do NOT concatenate raw \`llm_query()\` results directly into setFinal(). Sub-agent results may contain noise. Instead, use one final \`llm_query()\` to synthesize your findings into a clean, well-written answer, then call setFinal() with that.`,
+      `- Do NOT concatenate raw \`llm_query()\` results directly into setFinal(). Sub-agent results may contain noise. Instead, use one final \`llm_query()\` to synthesize your findings, then call setFinal() with that. IMPORTANT: Always pass your actual data as the second argument — the sub-agent CANNOT see your variables. \`llm_query('Summarize X', JSON.stringify({source1: result1, source2: result2}))\` — NEVER \`llm_query('Summarize X based on: ...description...', null)\`.`,
     ] : []),
   ]
 
