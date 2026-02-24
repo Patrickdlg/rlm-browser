@@ -1,5 +1,6 @@
 import { WebContentsView, app } from 'electron'
 import { writeFileSync, mkdirSync, appendFileSync, writeFile, mkdir } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import type { TabManager } from '../tabs/TabManager'
 import type { LLMConfig, IterationRecord, BlockResult, TaskState, TabChange } from '../../../src/shared/types'
@@ -23,8 +24,8 @@ export class RLMEngine {
   private status: 'idle' | 'running' | 'complete' | 'cancelled' | 'error' = 'idle'
   private pendingConfirmation: ((approved: boolean) => void) | null = null
   private traceFile: string | null = null
-  private conversationBuffer: Array<{system: string, messages: Array<{role: string, content: string}>, completion: string}> = []
-  private subConversationBuffers: Map<number, Array<{system: string, messages: Array<{role: string, content: string}>, completion: string}>> = new Map()
+  private conversationBuffer: Array<{messages: Array<{role: string, content: string}>, completion: string}> = []
+  private subConversationBuffers: Map<number, Array<{messages: Array<{role: string, content: string}>, completion: string}>> = new Map()
 
   constructor(tabManager: TabManager, commandCenterView: WebContentsView, config: LLMConfig) {
     this.tabManager = tabManager
@@ -88,6 +89,11 @@ export class RLMEngine {
     const slug = taskGoal.slice(0, 40).replace(/[^a-zA-Z0-9]+/g, '-').replace(/-+$/, '')
     const convDir = join(app.getPath('userData'), 'traces', 'conversations', `${ts}_${slug}`)
 
+    // Capture system prompts once
+    const mainSystemPrompt = getSystemPrompt()
+    const subSystemPrompt = getSystemPrompt({ isSubCall: true })
+    const promptHash = createHash('sha256').update(mainSystemPrompt).digest('hex').slice(0, 12)
+
     mkdirAsync(convDir).then(async () => {
       // meta.json
       const meta = {
@@ -98,10 +104,17 @@ export class RLMEngine {
         timestamp: Date.now(),
         iterations: mainBuffer.length,
         subAgentCount: subBuffers.size,
+        systemPromptHash: promptHash,
       }
       await writeAsync(join(convDir, 'meta.json'), JSON.stringify(meta, null, 2))
 
-      // main.jsonl — one line per iteration
+      // System prompts — saved once per conversation, not per iteration
+      await writeAsync(join(convDir, 'system.txt'), mainSystemPrompt)
+      if (subBuffers.size > 0) {
+        await writeAsync(join(convDir, 'sub-system.txt'), subSystemPrompt)
+      }
+
+      // main.jsonl — one line per iteration, just {messages, completion}
       const mainLines = mainBuffer.map(entry => JSON.stringify(entry)).join('\n')
       await writeAsync(join(convDir, 'main.jsonl'), mainLines + '\n')
 
@@ -228,7 +241,6 @@ export class RLMEngine {
 
         // Capture conversation for SFT training
         this.conversationBuffer.push({
-          system: getSystemPrompt(),
           messages: messages.map(m => ({ ...m })),
           completion: fullResponse,
         })
@@ -438,7 +450,6 @@ export class RLMEngine {
             this.subConversationBuffers.set(subCallIndex, [])
           }
           this.subConversationBuffers.get(subCallIndex)!.push({
-            system: subSystemPrompt,
             messages: history.map(m => ({ ...m })),
             completion: response,
           })
