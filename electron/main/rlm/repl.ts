@@ -1,7 +1,7 @@
 import ivm from 'isolated-vm'
 import { parseHTML as linkedomParseHTML } from 'linkedom'
 import type { TabManager } from '../tabs/TabManager'
-import { capResult, SLEEP_CAP_MS, EXEC_TIMEOUT_MS, ISOLATE_MEMORY_LIMIT_MB, LOG_MAX_CHARS } from './caps'
+import { capResult, SLEEP_CAP_MS, EXEC_TIMEOUT_MS, ISOLATE_MEMORY_LIMIT_MB, LOG_MAX_CHARS, LOG_EXTENDED_MAX } from './caps'
 
 /** Serialize a DOM element to a plain object for transfer into the isolate */
 function serializeElement(el: any): object {
@@ -105,11 +105,12 @@ export class REPLRuntime {
       return this.tabManager.getActiveTabId()
     }))
 
-    // log(message) — auto-truncated to LOG_MAX_CHARS
-    await jail.set('_log', new ivm.Reference((message: string) => {
+    // log(message, limit?) — auto-truncated, model can request more via limit
+    await jail.set('_log', new ivm.Reference((message: string, limit?: number) => {
       const str = String(message)
-      const truncated = str.length > LOG_MAX_CHARS
-        ? str.slice(0, LOG_MAX_CHARS) + `\n... (truncated, ${str.length} chars total)`
+      const cap = limit ? Math.min(Math.max(limit, LOG_MAX_CHARS), LOG_EXTENDED_MAX) : LOG_MAX_CHARS
+      const truncated = str.length > cap
+        ? str.slice(0, cap) + `\n... (truncated, ${str.length} chars total)`
         : str
       this.callbacks.onLog(truncated)
     }))
@@ -396,8 +397,9 @@ export class REPLRuntime {
       }
 
       // Utility functions
-      function log(message) {
-        _log.applySync(undefined, [String(message)], { arguments: { copy: true } });
+      function log(message, limit) {
+        const args = limit ? [String(message), limit] : [String(message)];
+        _log.applySync(undefined, args, { arguments: { copy: true } });
       }
 
       async function sleep(ms) {
