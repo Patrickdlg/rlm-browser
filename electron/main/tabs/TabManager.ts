@@ -3,6 +3,7 @@ import { TabState } from './TabState'
 import { TabDiffer } from './TabDiffer'
 import type { TabInfo, TabChange } from '../../../src/shared/types'
 import { IPC } from '../../../src/shared/ipc-channels'
+import { SCREENSHOT_MAX_DIMENSION } from '../rlm/caps'
 
 let tabCounter = 0
 function nextTabId(): string {
@@ -228,6 +229,42 @@ export class TabManager {
     const entry = this.tabs.get(tabId)
     if (!entry) throw new Error(`Tab ${tabId} not found`)
     return entry.view.webContents.executeJavaScript(code)
+  }
+
+  /** Capture visible viewport as a base64 PNG data URL */
+  async screenshot(tabId: string): Promise<string> {
+    const entry = this.tabs.get(tabId)
+    if (!entry) throw new Error(`Tab ${tabId} not found`)
+
+    // The view may be detached (e.g. Command Center is open). capturePage() returns
+    // an empty image for detached views, so temporarily attach it offscreen.
+    const children = this.window.contentView.children
+    const wasAttached = children.includes(entry.view)
+    if (!wasAttached) {
+      this.window.contentView.addChildView(entry.view)
+      // Give it real bounds so the renderer paints — place it behind other views
+      const bounds = this.getTabBounds()
+      entry.view.setBounds(bounds)
+      // Brief yield so the compositor renders a frame
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+
+    try {
+      let image = await entry.view.webContents.capturePage()
+      const size = image.getSize()
+      if (size.width === 0 || size.height === 0) {
+        throw new Error(`Screenshot captured empty image for tab ${tabId} — page may not be rendered yet`)
+      }
+      if (size.width > SCREENSHOT_MAX_DIMENSION || size.height > SCREENSHOT_MAX_DIMENSION) {
+        const scale = SCREENSHOT_MAX_DIMENSION / Math.max(size.width, size.height)
+        image = image.resize({ width: Math.round(size.width * scale), height: Math.round(size.height * scale) })
+      }
+      return `data:image/png;base64,${image.toPNG().toString('base64')}`
+    } finally {
+      if (!wasAttached) {
+        this.window.contentView.removeChildView(entry.view)
+      }
+    }
   }
 
   /** Wait for a CSS selector to appear in a tab's DOM (polls every 200ms) */

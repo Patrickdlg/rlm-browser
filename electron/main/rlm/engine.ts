@@ -87,8 +87,8 @@ export class RLMEngine {
     const slug = taskGoal.slice(0, 40).replace(/[^a-zA-Z0-9]+/g, '-').replace(/-+$/, '')
     const convDir = join(app.getPath('userData'), 'traces', 'conversations', `${ts}_${slug}`)
 
-    const mainSystemPrompt = getSystemPrompt()
-    const subSystemPrompt = getSystemPrompt({ isSubCall: true })
+    const mainSystemPrompt = getSystemPrompt({ enableVision: config.enableVision })
+    const subSystemPrompt = getSystemPrompt({ isSubCall: true, enableVision: config.enableVision })
     const promptHash = createHash('sha256').update(mainSystemPrompt).digest('hex').slice(0, 12)
 
     mkdirAsync(convDir).then(async () => {
@@ -159,7 +159,7 @@ export class RLMEngine {
     })
 
     try {
-      await this.repl.initialize()
+      await this.repl.initialize({ enableVision: this.config.enableVision })
     } catch (err: any) {
       this.status = 'error'
       this.emit(IPC.RLM_ERROR, { error: `Failed to initialize REPL: ${err.message}` })
@@ -205,7 +205,7 @@ export class RLMEngine {
         let fullResponse = ''
         try {
           fullResponse = await this.llmClient.streamCompletion(
-            getSystemPrompt(),
+            getSystemPrompt({ enableVision: this.config.enableVision }),
             messages,
             this.config.primaryModel,
             (event) => {
@@ -387,15 +387,18 @@ export class RLMEngine {
     })
 
     try {
-      await subRepl.initialize()
+      await subRepl.initialize({ enableVision: this.config.enableVision })
 
-      // Inject the data as a variable in the sub-REPL — no JSON.parse roundtrip
-      if (data !== undefined) {
+      // Detect if data is a screenshot (base64 image data URL)
+      const isVisionData = typeof data === 'string' && data.startsWith('data:image/')
+
+      // Inject the data as a variable in the sub-REPL — skip for vision (image goes in message content)
+      if (data !== undefined && !isVisionData) {
         await subRepl.execute(`var __data = (${JSON.stringify(data)})`)
       }
 
       // Same system prompt as main agent, just with llm_query/llm_batch excluded
-      const basePrompt = getSystemPrompt({ isSubCall: true })
+      const basePrompt = getSystemPrompt({ isSubCall: true, enableVision: this.config.enableVision })
       const subSystemPrompt = [
         basePrompt,
         `\n## Sub-Task Context`,
@@ -403,14 +406,20 @@ export class RLMEngine {
         `Progress so far: ${this.taskTracker.progressSummary()}`,
         `\n## Your Task`,
         prompt,
-        data !== undefined ? `\n⚠️ IMPORTANT: The parent agent has loaded data into the variable \`__data\`. This is the content you need to process. Read it, reason about it, and call setFinal() with your answer. Do NOT open new tabs or search for the same information — the data is already in \`__data\`.` : '',
+        isVisionData ? `\n⚠️ A screenshot is attached to the first message. Analyze it visually and call setFinal() with your answer.` : '',
+        data !== undefined && !isVisionData ? `\n⚠️ IMPORTANT: The parent agent has loaded data into the variable \`__data\`. This is the content you need to process. Read it, reason about it, and call setFinal() with your answer. Do NOT open new tabs or search for the same information — the data is already in \`__data\`.` : '',
       ].join('\n')
 
-      const history: Array<{ role: 'user' | 'assistant'; content: string }> = [
-        { role: 'user', content: data !== undefined
-          ? `Execute the sub-task. The data you need is already in \`__data\` — process it and call setFinal() with your answer. Do NOT open tabs or do searches.`
-          : 'Execute the sub-task described in your system prompt.'
-        },
+      const history: Array<{ role: 'user' | 'assistant'; content: string | Array<{ type: string; [key: string]: any }> }> = [
+        isVisionData
+          ? { role: 'user', content: [
+              { type: 'image_url', image_url: { url: data } },
+              { type: 'text', text: `Analyze this screenshot and complete the sub-task. Call setFinal() with your answer.` },
+            ] }
+          : { role: 'user', content: data !== undefined
+              ? `Execute the sub-task. The data you need is already in \`__data\` — process it and call setFinal() with your answer. Do NOT open tabs or do searches.`
+              : 'Execute the sub-task described in your system prompt.'
+          },
       ]
 
       let consecutiveNoCodes = 0

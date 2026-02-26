@@ -43,6 +43,9 @@ export const LOG_EXTENDED_MAX = 50_000
 /** Memory limit for isolated-vm in MB */
 export const ISOLATE_MEMORY_LIMIT_MB = 128
 
+/** Max screenshot dimension (longest side) — caps base64 size */
+export const SCREENSHOT_MAX_DIMENSION = 1280
+
 /** Estimate token count from character length */
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN)

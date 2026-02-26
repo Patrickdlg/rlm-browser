@@ -72,6 +72,7 @@ export interface LLMConfig {
   maxSubCalls: number
   enableThinkingMain?: boolean
   enableThinkingSub?: boolean
+  enableVision?: boolean
 }
 
 // --- IPC Payload Types ---

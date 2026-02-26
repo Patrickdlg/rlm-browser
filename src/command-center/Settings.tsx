@@ -192,6 +192,23 @@ export default function Settings({ onClose }: SettingsProps) {
           </div>
         )}
 
+        {/* Vision (OpenAI-compatible only) */}
+        {config.provider === 'openai' && (
+          <div>
+            <label className="block text-xs text-[#a6adc8] mb-2">Vision</label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={config.enableVision ?? false}
+                onChange={(e) => update('enableVision', e.target.checked)}
+                className="accent-[#89b4fa]"
+              />
+              <span className="text-xs text-[#cdd6f4]">Enable screenshot() + visual analysis</span>
+            </label>
+            <p className="text-[10px] text-[#45475a] mt-1">Adds screenshot(tabId) to the REPL. Pass to llm_query() for visual analysis of pages.</p>
+          </div>
+        )}
+
         {/* Save Button */}
         <button
           onClick={handleSave}

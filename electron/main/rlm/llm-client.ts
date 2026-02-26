@@ -9,6 +9,9 @@ export interface StreamEvent {
   error?: string
 }
 
+/** Content can be a plain string or multipart array (for vision messages) */
+export type MessageContent = string | Array<{ type: string; [key: string]: any }>
+
 export class LLMClient {
   private anthropic: Anthropic | null = null
   private openai: OpenAI | null = null
@@ -53,10 +56,10 @@ export class LLMClient {
     throw new Error('LLM client not configured')
   }
 
-  /** Non-streaming completion for sub-calls */
+  /** Non-streaming completion for sub-calls (supports multipart content for vision) */
   async complete(
     system: string,
-    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    messages: Array<{ role: 'user' | 'assistant'; content: MessageContent }>,
     model: string,
     signal?: AbortSignal
   ): Promise<string> {
@@ -64,7 +67,7 @@ export class LLMClient {
       const response = await this.anthropic.messages.create({
         model,
         system,
-        messages,
+        messages: messages as any,
         max_tokens: 4096,
         temperature: 0,
       })
@@ -77,7 +80,7 @@ export class LLMClient {
         messages: [
           { role: 'system', content: system },
           ...messages,
-        ],
+        ] as any,
         max_tokens: 4096,
         temperature: 0,
         ...(this.enableThinkingSub !== undefined ? {

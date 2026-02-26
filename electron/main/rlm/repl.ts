@@ -30,6 +30,10 @@ export interface REPLCallbacks {
   onSubBatch: (prompts: Array<{ prompt: string; data?: unknown }>) => Promise<Array<{ status: string; value?: string; error?: string }>>
 }
 
+export interface REPLOptions {
+  enableVision?: boolean
+}
+
 export class REPLRuntime {
   private isolate: ivm.Isolate | null = null
   private context: ivm.Context | null = null
@@ -45,7 +49,7 @@ export class REPLRuntime {
     this.callbacks = callbacks
   }
 
-  async initialize(): Promise<void> {
+  async initialize(options: REPLOptions = {}): Promise<void> {
     this.isolate = new ivm.Isolate({ memoryLimit: ISOLATE_MEMORY_LIMIT_MB })
     this.context = await this.isolate.createContext()
 
@@ -140,6 +144,13 @@ export class REPLRuntime {
         return new ivm.ExternalCopy([{ status: 'rejected', error: err.message || String(err) }]).copyInto()
       }
     }))
+
+    // screenshot(tabId) → base64 data URL (only when vision enabled)
+    if (options.enableVision) {
+      await jail.set('_screenshot', new ivm.Reference(async (tabId: string) => {
+        return await this.tabManager.screenshot(tabId)
+      }))
+    }
 
     // --- Host-side DOM parsing (linkedom) ---
 
@@ -476,6 +487,15 @@ export class REPLRuntime {
       async function store() { throw new Error('store not yet implemented — will be wired in Phase 6'); }
       async function retrieve() { throw new Error('retrieve not yet implemented — will be wired in Phase 6'); }
     `)
+
+    // Override screenshot stub with real implementation when vision is enabled
+    if (options.enableVision) {
+      await this.context.eval(`
+        screenshot = async function screenshot(tabId) {
+          return _screenshot.apply(undefined, [tabId], { arguments: { copy: true }, result: { promise: true, copy: true } });
+        }
+      `)
+    }
   }
 
   /**
@@ -562,6 +582,7 @@ export class REPLRuntime {
             '_execInTab', '_openTab', '_closeTab', '_navigate', '_switchTab',
             '_waitForLoad', '_waitForSelector', '_sleep', '_getTabs', '_getActiveTab', '_log', '_setFinal',
             '_llm_query', '_llm_batch',
+            '_screenshot',
             '_parseHTML', '_parsePage', '_domQueryAll', '_domQueryOne', '_domText', '_freeDoc',
             'globalThis', 'undefined', 'NaN', 'Infinity',
           ]);

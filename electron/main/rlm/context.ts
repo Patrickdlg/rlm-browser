@@ -7,11 +7,12 @@ import { PREVIEW_MAX_CHARS, VAR_PREVIEW_MAX_CHARS } from './caps'
 
 export interface SystemPromptOptions {
   isSubCall?: boolean
+  enableVision?: boolean
 }
 
 /** Build the system prompt — same for main and sub-calls, minus llm_query/llm_batch for sub-calls */
 export function getSystemPrompt(options: SystemPromptOptions = {}): string {
-  const { isSubCall = false } = options
+  const { isSubCall = false, enableVision = false } = options
 
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
 
@@ -51,6 +52,9 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
       `- When \`__data\` is provided, just \`log(__data)\` to see it (output is auto-truncated). Then answer and call setFinal(). Even if __data is JSON, your answer must be plain natural language — never mirror the input format. If the truncation cut off something important, use \`indexOf\` to jump to that section, or \`log(__data, 20000)\` to see more. Do NOT slice through data in small chunks across iterations.`,
       `- IMPORTANT: Other agents may be working on existing tabs concurrently. Treat tabs you did NOT create as READ-ONLY — you may read their content (\`getText\`, \`getDOM\`, \`execInTab\`, \`querySelector\`, etc.) but do NOT \`navigate()\`, \`closeTab()\`, \`click()\`, or \`type()\` on them.`,
       `- If you need to visit a URL, use \`openTab(url)\` to create your own tab. Clean up with \`closeTab()\` when you're done.`,
+    ] : []),
+    ...(enableVision && !isSubCall ? [
+      `- \`getText()\` and \`getDOM()\` are BLIND — they return text/HTML only, not images. When the task involves anything visual (describing a page, reading an image, analyzing a chart, identifying colors/layout), use \`screenshot(tabId)\` to capture the page and pass the result to \`llm_query(prompt, screenshot)\`. The sub-agent will see the image.`,
     ] : []),
     `- When you have enough information to answer, call setFinal() IMMEDIATELY. Do not do extra iterations. If a sub-call returned a useful answer, deliver it — don't redo the work.`,
     `- Before calling setFinal(), make sure your answer is coherent, deduplicated, and directly addresses the user's question. Do not return raw scraped text or lists with duplicate entries.`,
@@ -102,6 +106,19 @@ export function getSystemPrompt(options: SystemPromptOptions = {}): string {
     `scroll(tabId, direction, amount?)   // Scroll page ('up' or 'down', default 500px)`,
     '```',
   ]
+
+  if (enableVision) {
+    apiSections.push(
+      ``,
+      `### Vision`,
+      '```',
+      `screenshot(tabId) → string  // Capture visible viewport as base64 PNG data URL`,
+      '```',
+      `Usage: \`const img = await screenshot(tabId); const description = await llm_query('Describe what you see', img)\``,
+      `The sub-agent receives the image visually and can describe layouts, read text in images, analyze charts, identify UI elements, etc.`,
+      `⚠️ \`getText()\` and \`getDOM()\` CANNOT see images, charts, canvases, or visual layouts — they only return text/HTML. When the user asks about anything visual (what a page looks like, what an image shows, colors, layout, charts, graphs, screenshots), you MUST use \`screenshot()\` + \`llm_query()\`.`,
+    )
+  }
 
   if (!isSubCall) {
     apiSections.push(
