@@ -259,7 +259,7 @@ export class TabManager {
         const scale = SCREENSHOT_MAX_DIMENSION / Math.max(size.width, size.height)
         image = image.resize({ width: Math.round(size.width * scale), height: Math.round(size.height * scale) })
       }
-      return `data:image/png;base64,${image.toPNG().toString('base64')}`
+      return `data:image/jpeg;base64,${image.toJPEG(80).toString('base64')}`
     } finally {
       if (!wasAttached) {
         this.window.contentView.removeChildView(entry.view)
