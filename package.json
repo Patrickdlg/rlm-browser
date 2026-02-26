@@ -1,5 +1,6 @@
 {
   "name": "ouroboros",
+  "productName": "Ouroboros",
   "version": "0.1.0",
   "description": "Electron browser with Recursive Language Model engine",
   "main": "./out/main/index.js",
@@ -7,7 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "postinstall": "electron-rebuild -f -w isolated-vm",
+    "postinstall": "electron-rebuild -f -w isolated-vm && plutil -replace CFBundleDisplayName -string Ouroboros node_modules/electron/dist/Electron.app/Contents/Info.plist && plutil -replace CFBundleName -string Ouroboros node_modules/electron/dist/Electron.app/Contents/Info.plist",
     "rebuild": "electron-rebuild -f -w isolated-vm",
     "package": "electron-vite build && electron-builder"
   },

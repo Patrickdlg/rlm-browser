@@ -1,7 +1,10 @@
-import { app, BaseWindow, WebContentsView, ipcMain } from 'electron'
+import { app, BaseWindow, WebContentsView, ipcMain, nativeImage } from 'electron'
 import { join } from 'path'
 import { TabManager } from './tabs/TabManager'
 import { registerIPCHandlers } from './ipc/handlers'
+
+// Set app name (shows in dock and menu bar during dev)
+app.name = 'Ouroboros'
 
 // Layout constants
 const CHROME_HEIGHT = 78
@@ -111,6 +114,11 @@ const welcomeHTML = `<!DOCTYPE html>
 </head>
 <body>
   <div class="container">
+    <svg width="72" height="72" viewBox="0 0 512 512" style="margin-bottom: 16px;">
+      <defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#89b4fa"/><stop offset="100%" stop-color="#74c7ec"/></linearGradient></defs>
+      <rect width="512" height="512" rx="108" fill="#181825"/>
+      <g transform="translate(256,256)"><path d="M 75,-152 A 170,170 0 1,1 -75,-152" fill="none" stroke="url(#b)" stroke-width="46" stroke-linecap="round"/><polygon points="-48,-152 72,-192 72,-112" fill="#89b4fa"/><circle cx="44" cy="-162" r="9" fill="#181825"/></g>
+    </svg>
     <div class="logo">Ouroboros</div>
     <div class="tagline">Recursive Language Model Browser</div>
     <div class="actions">
@@ -255,7 +263,19 @@ process.on('unhandledRejection', (reason, _promise) => {
   }
 })
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  // Set dock icon (macOS) — electron-builder handles this for packaged builds,
+  // but during dev we need to set it explicitly
+  if (process.platform === 'darwin' && app.dock) {
+    const iconPath = join(__dirname, '../../resources/icon.png')
+    try {
+      app.dock.setIcon(nativeImage.createFromPath(iconPath))
+    } catch {
+      // Icon may not exist in all environments
+    }
+  }
+  createWindow()
+})
 
 app.on('window-all-closed', () => {
   if (tabManager) tabManager.destroyAll()
