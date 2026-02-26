@@ -13,6 +13,8 @@ const DEFAULT_CONFIG: LLMConfig = {
   subModel: 'claude-haiku-4-5-20251001',
   maxIterations: 25,
   maxSubCalls: 50,
+  enableThinkingMain: true,
+  enableThinkingSub: false,
 }
 
 export default function Settings({ onClose }: SettingsProps) {
@@ -42,7 +44,7 @@ export default function Settings({ onClose }: SettingsProps) {
     setTimeout(() => setSaved(false), 2000)
   }
 
-  const update = (key: keyof LLMConfig, value: string | number) => {
+  const update = (key: keyof LLMConfig, value: string | number | boolean) => {
     if (key === 'apiKey') setApiKeyChanged(true)
     setConfig(prev => ({ ...prev, [key]: value }))
   }
@@ -161,6 +163,34 @@ export default function Settings({ onClose }: SettingsProps) {
             />
           </div>
         </div>
+
+        {/* Thinking Mode (OpenAI-compatible only) */}
+        {config.provider === 'openai' && (
+          <div>
+            <label className="block text-xs text-[#a6adc8] mb-2">Thinking Mode (Qwen3.5)</label>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.enableThinkingMain ?? true}
+                  onChange={(e) => update('enableThinkingMain', e.target.checked)}
+                  className="accent-[#89b4fa]"
+                />
+                <span className="text-xs text-[#cdd6f4]">Main loop</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.enableThinkingSub ?? false}
+                  onChange={(e) => update('enableThinkingSub', e.target.checked)}
+                  className="accent-[#89b4fa]"
+                />
+                <span className="text-xs text-[#cdd6f4]">Sub-calls (llm_query)</span>
+              </label>
+            </div>
+            <p className="text-[10px] text-[#45475a] mt-1">Disabling thinking saves tokens but may reduce reasoning quality</p>
+          </div>
+        )}
 
         {/* Save Button */}
         <button

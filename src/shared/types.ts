@@ -70,6 +70,8 @@ export interface LLMConfig {
   subModel: string
   maxIterations: number
   maxSubCalls: number
+  enableThinkingMain?: boolean
+  enableThinkingSub?: boolean
 }
 
 // --- IPC Payload Types ---

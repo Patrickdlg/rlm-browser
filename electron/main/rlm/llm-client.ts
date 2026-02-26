@@ -13,9 +13,13 @@ export class LLMClient {
   private anthropic: Anthropic | null = null
   private openai: OpenAI | null = null
   private provider: LLMProvider = 'anthropic'
+  private enableThinkingMain: boolean = true
+  private enableThinkingSub: boolean = false
 
   configure(config: LLMConfig): void {
     this.provider = config.provider
+    this.enableThinkingMain = config.enableThinkingMain ?? true
+    this.enableThinkingSub = config.enableThinkingSub ?? false
 
     if (config.provider === 'anthropic') {
       this.anthropic = new Anthropic({ apiKey: config.apiKey })
@@ -76,7 +80,10 @@ export class LLMClient {
         ],
         max_tokens: 4096,
         temperature: 0,
-      })
+        ...(this.enableThinkingSub !== undefined ? {
+          extra_body: { chat_template_kwargs: { enable_thinking: this.enableThinkingSub } },
+        } : {}),
+      } as any)
       if (signal?.aborted) throw new Error('Aborted')
       return response.choices[0]?.message?.content || ''
     }
@@ -142,7 +149,10 @@ export class LLMClient {
       max_tokens: 4096,
       temperature: 0,
       stream: true,
-    })
+      ...(this.enableThinkingMain !== undefined ? {
+        extra_body: { chat_template_kwargs: { enable_thinking: this.enableThinkingMain } },
+      } : {}),
+    } as any)
 
     for await (const chunk of stream) {
       if (signal?.aborted) throw new Error('Aborted')
